@@ -2,16 +2,21 @@
 
 - 在后台线程中执行 scripts/sync_official.py 的 run_pipeline，避免阻塞 HTTP 请求。
 - 维持全局 _status，供 /api/sync/status 轮询进度。
-- 完成后清理 songs 服务的进程内缓存，使新榜单立即对查询可见。
+- 完成后清理进程内缓存，使新榜单立即对查询可见。
 """
 from __future__ import annotations
 
 import contextlib
 import importlib.util
 import io
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ..core import cache as cache_svc
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -41,16 +46,10 @@ def _load_sync_module():
 
 
 def _invalidate_caches() -> None:
-    """清空 songs/boards 服务的进程内缓存，让新数据立即生效。"""
-    for mod_name in ("backend.app.services.songs", "backend.app.services.boards"):
-        try:
-            mod = __import__(mod_name, fromlist=["_CACHE"])
-            cache = getattr(mod, "_CACHE", None)
-            if isinstance(cache, dict):
-                for k in list(cache):
-                    cache[k] = None
-        except Exception:  # noqa: BLE001
-            continue
+    """清空进程内缓存，让新数据立即生效。"""
+    n = cache_svc.clear_cache()
+    if n:
+        logger.info("cache cleared: %d entries", n)
 
 
 def _run(types: tuple[str, ...], songs: bool, rebuild_monthly: bool) -> None:

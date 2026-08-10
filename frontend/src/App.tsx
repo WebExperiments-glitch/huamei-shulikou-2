@@ -42,24 +42,24 @@ export default function App() {
             <Route index element={withSuspense(<Dashboard />)} />
             <Route path="annual" element={withSuspense(<AnnualReview />)} />
             <Route path="legend-timeline" element={withSuspense(<LegendTimeline />)} />
-          <Route path="artist/:kind/:name" element={withSuspense(<ArtistDetail />)} />
-          <Route path="agent" element={withSuspense(<Agent />)} />
-          <Route path="board/:type" element={withSuspense(<OfficialBoard />)} />
+            <Route path="artist/:kind/:name" element={withSuspense(<ArtistDetail />)} />
+            <Route path="agent" element={withSuspense(<Agent />)} />
+            <Route path="board/:type" element={withSuspense(<OfficialBoard />)} />
             <Route path="monthly" element={withSuspense(<MonthlyBoard />)} />
             <Route path="daily" element={withSuspense(<DailyBoard />)} />
             <Route path="songs" element={withSuspense(<SongLibrary />)} />
             <Route path="song/:bvid" element={withSuspense(<SongDetail />)} />
             <Route path="artists" element={withSuspense(<Artists />)} />
             <Route path="vocalists" element={withSuspense(<Vocalists />)} />
-          <Route path="hot" element={withSuspense(<HotBoard />)} />
-          <Route path="compare" element={withSuspense(<Compare />)} />
-          <Route path="analytics" element={withSuspense(<Analytics />)} />
-          <Route path="formula" element={withSuspense(<Formula />)} />
-          <Route path="favorites" element={withSuspense(<Favorites />)} />
-          <Route path="netease" element={<NeteasePlayerProvider><Outlet /></NeteasePlayerProvider>}>
-            <Route index element={withSuspense(<Netease />)} />
-            <Route path=":kind/:id" element={withSuspense(<NeteaseDetail />)} />
-          </Route>
+            <Route path="hot" element={withSuspense(<HotBoard />)} />
+            <Route path="compare" element={withSuspense(<Compare />)} />
+            <Route path="analytics" element={withSuspense(<Analytics />)} />
+            <Route path="formula" element={withSuspense(<Formula />)} />
+            <Route path="favorites" element={withSuspense(<Favorites />)} />
+            <Route path="netease" element={<NeteasePlayerProvider><Outlet /></NeteasePlayerProvider>}>
+              <Route index element={withSuspense(<Netease />)} />
+              <Route path=":kind/:id" element={withSuspense(<NeteaseDetail />)} />
+            </Route>
           </Route>
         </Routes>
       </BrowserRouter>

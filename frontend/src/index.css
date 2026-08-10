@@ -81,8 +81,16 @@ a:hover { text-decoration: underline; }
   border-radius: 9px;
   background: linear-gradient(135deg, var(--accent), #7b6bff 55%, var(--pink));
   display: grid; place-items: center;
-  font-weight: 800; font-size: 17px; color: #06121f;
+  color: #06121f;
   flex: none;
+  overflow: hidden;
+  position: relative;
+}
+.sidebar .logo .mark::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,.22), transparent 55%);
+  pointer-events: none;
 }
 .sidebar .logo .name { font-weight: 700; font-size: 15px; color: var(--text); letter-spacing: 0.3px; }
 .sidebar .logo .sub { font-size: 10.5px; color: var(--text-faint); margin-top: 1px; }
@@ -973,6 +981,28 @@ a { color: var(--neon); }
   border-radius: 8px; padding: 8px 22px; font-size: 13px; cursor: pointer; font-weight: 600;
 }
 .eb-retry:hover { filter: brightness(1.08); }
+.eb-details {
+  width: 100%; max-width: 600px; text-align: left;
+  border: 1px solid var(--border); border-radius: 8px; padding: 0;
+  background: var(--bg-card); overflow: hidden;
+}
+.eb-details summary {
+  cursor: pointer; padding: 8px 14px; font-size: 12.5px;
+  color: var(--text-dim); font-weight: 600; user-select: none;
+}
+.eb-details summary:hover { color: var(--text); }
+.eb-details pre {
+  margin: 0; padding: 10px 14px; font-size: 11px; line-height: 1.5;
+  color: var(--text-dim); border-top: 1px solid var(--border);
+  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+}
+.eb-comp-stack { color: var(--text-faint); font-size: 10.5px; }
+.eb-actions { display: flex; gap: 10px; }
+.eb-copy {
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-dim);
+  border-radius: 8px; padding: 8px 18px; font-size: 12.5px; cursor: pointer;
+}
+.eb-copy:hover { border-color: var(--accent-dim); color: var(--text); }
 
 /* ============ 骨架屏 ============ */
 .sk {
@@ -1041,7 +1071,13 @@ a:hover { text-shadow: 0 0 8px rgba(0,229,255,.5); }
 .bm-mark {
   width: 26px; height: 26px; border-radius: 7px; flex: none;
   background: linear-gradient(135deg, var(--accent), #7b6bff 55%, var(--pink));
-  display: grid; place-items: center; font-weight: 800; font-size: 14px; color: #06121f;
+  display: grid; place-items: center; color: #06121f;
+  overflow: hidden; position: relative;
+}
+.bm-mark::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,.22), transparent 55%);
+  pointer-events: none;
 }
 .hamburger, .mobile-search, .mobile-topbar { display: none; }
 .sidebar-backdrop { display: none; }

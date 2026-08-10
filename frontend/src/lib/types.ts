@@ -36,15 +36,11 @@ export interface RankEntry {
   bvid: string
   title: string
   title_cn?: string | null
-  view?: number
-  views?: number
-  favorite?: number
-  favorites?: number
-  coin?: number
-  coins?: number
-  like?: number
-  likes?: number
-  share?: number
+  view: number
+  favorite: number
+  coin: number
+  like: number
+  share: number
   score: number
   pubtime?: number
   first_recorded_at?: number
@@ -57,7 +53,6 @@ export interface RankEntry {
   issue?: string
   issue_date?: string
   name?: string
-  sum_score?: number
   best_rank?: number
 }
 

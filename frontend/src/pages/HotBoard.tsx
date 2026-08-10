@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
-import { RefreshCw, TrendingUp, Search, Flame, ArrowUpRight, Brain, Eye, ThumbsUp, Coins, Star, MessageCircle, Subtitles, Sparkles, Square, Send } from "lucide-react"
+import { RefreshCw, TrendingUp, Search, Flame, ArrowUpRight, Brain } from "lucide-react"
 import { api } from "../lib/api"
 import { ChipRow, Empty, Spinner, fmt, fmtDate } from "../components/ui"
-import { MarkdownLite } from "../components/MarkdownLite"
 import { useDebounce } from "../hooks/useDebounce"
 import { extractBv } from "../lib/bvid"
-import type { AiTurn, SongThink, HotSong, MomentumItem } from "../lib/types"
+import type { HotSong, MomentumItem } from "../lib/types"
+import { SongThinkCard } from "./HotBoard/SongThinkCard"
+import { SongAIAnalysis } from "./HotBoard/SongAIAnalysis"
 
 const SORTS = [
   { key: "score", label: "综合热度" },
@@ -90,7 +91,6 @@ export default function HotBoard() {
     enabled: mode === "momentum",
   })
 
-  // 术曲思考：搜索 + 实时详情
   const [thinkInput, setThinkInput] = useState("")
   const [selBvid, setSelBvid] = useState<string | null>(null)
   const debouncedThink = useDebounce(thinkInput, 350)
@@ -166,14 +166,7 @@ export default function HotBoard() {
             </span>
           </div>
           <div style={{ height: 6, background: "var(--bg-soft)", borderRadius: 99, overflow: "hidden" }}>
-            <div
-              style={{
-                height: "100%",
-                width: `${pct}%`,
-                background: "var(--accent)",
-                transition: "width .3s ease",
-              }}
-            />
+            <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent)", transition: "width .3s ease" }} />
           </div>
           <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
             首次拉取全量约 1.2 万首，需 1–2 小时；本轮默认抓取各榜单最近 10 期，约几分钟完成
@@ -181,7 +174,6 @@ export default function HotBoard() {
         </div>
       )}
 
-      {/* 模式切换 */}
       <div className="seg" style={{ marginBottom: 14 }}>
         <button className={`seg-btn${mode === "board" ? " active" : ""}`} onClick={() => { setMode("board"); setPage(0) }}>
           <TrendingUp size={13} style={{ verticalAlign: -2, marginRight: 5 }} />
@@ -199,7 +191,6 @@ export default function HotBoard() {
 
       {mode === "board" ? (
         <>
-          {/* 概览 KPI */}
           <div className="hot-kpi">
             <div className="kpi">
               <div className="kpi-val">{summary ? fmt(summary.total) : "—"}</div>
@@ -219,7 +210,6 @@ export default function HotBoard() {
             </div>
           </div>
 
-          {/* 搜索 + 标签筛选 */}
           <div className="card" style={{ marginBottom: 14 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
               <div className="hot-search">
@@ -338,7 +328,6 @@ export default function HotBoard() {
         </>
       ) : mode === "momentum" ? (
         <>
-          {/* 涨速榜：本轮净增概览 */}
           {momQ.data?.has_baseline === false ? (
             <div className="card" style={{ marginBottom: 14, padding: 16 }}>
               <div className="callout">
@@ -500,324 +489,5 @@ export default function HotBoard() {
         </>
       )}
     </>
-  )
-}
-
-function SongThinkCard({ d }: { d: SongThink }) {
-  const ratios = [
-    { label: "点赞率", v: d.view ? d.like / d.view : 0 },
-    { label: "投币率", v: d.view ? d.coin / d.view : 0 },
-    { label: "收藏率", v: d.view ? d.favorite / d.view : 0 },
-    { label: "评论率", v: d.view ? d.reply / d.view : 0 },
-    { label: "弹幕率", v: d.view ? d.danmaku / d.view : 0 },
-  ]
-  const maxR = Math.max(...ratios.map((r) => r.v), 1e-9)
-  const metrics = [
-    { icon: Eye, label: "浏览量", v: d.view, color: "var(--accent)" },
-    { icon: ThumbsUp, label: "点赞数", v: d.like, color: "var(--green)" },
-    { icon: Coins, label: "投币数", v: d.coin, color: "var(--pink)" },
-    { icon: Star, label: "收藏数", v: d.favorite, color: "var(--gold)" },
-    { icon: MessageCircle, label: "评论条数", v: d.reply, color: "var(--myth)" },
-    { icon: Subtitles, label: "弹幕条数", v: d.danmaku, color: "var(--sky)" },
-  ]
-  const mm = Math.floor(d.duration / 60)
-  const ss = String(d.duration % 60).padStart(2, "0")
-  return (
-    <div className="think-card">
-      <div className="think-head">
-        {d.cover && (
-          <img
-            className="think-cover"
-            src={d.cover.startsWith("http") ? d.cover : `https:${d.cover}`}
-            alt=""
-          />
-        )}
-        <div className="think-titlewrap">
-          <div className="think-title">{d.title || d.title_cn || d.bvid}</div>
-          {d.title_cn && d.title_cn !== d.title && <div className="think-cn">中文名：{d.title_cn}</div>}
-          <div className="think-meta">
-            <span>UP：<b>{d.owner || "—"}</b></span>
-            <span>分区：{d.category || "—"}</span>
-            <span>投稿：{fmtDate(d.pubtime)}</span>
-            <span>时长：{mm}:{ss}</span>
-          </div>
-          <div className="think-links">
-            <a href={`https://www.bilibili.com/video/${d.bvid}`} target="_blank" rel="noreferrer" className="ext-link">B站原视频 ↗</a>
-            <Link to={`/song/${d.bvid}`} className="ext-link">单曲详情页 ↗</Link>
-          </div>
-        </div>
-      </div>
-
-      <div className="think-metrics">
-        {metrics.map((m) => (
-          <div className="metric-tile" key={m.label}>
-            <m.icon size={16} style={{ color: m.color }} />
-            <div className="metric-val" style={{ color: m.color }}>{fmt(m.v)}</div>
-            <div className="metric-label">{m.label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="think-section-title">互动健康度（占浏览量比例）</div>
-      <div className="ratio-list">
-        {ratios.map((r) => (
-          <div className="ratio-row" key={r.label}>
-            <span className="ratio-label">{r.label}</span>
-            <div className="ratio-track"><div className="ratio-fill" style={{ width: `${(r.v / maxR) * 100}%` }} /></div>
-            <span className="ratio-pct">{(r.v * 100).toFixed(2)}%</span>
-          </div>
-        ))}
-      </div>
-
-      {d.desc && (
-        <div className="think-desc">
-          <div className="think-section-title">视频简介</div>
-          <div className="think-desc-body">{d.desc}</div>
-        </div>
-      )}
-
-      <div className="think-foot">数据实时抓取自 B站 · 更新于 {fmtDate(d.fetched_at)}</div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// 术曲思考 · AI 深度分析（本地大模型，多轮对话）
-// 复用后端 /api/ai/stream-song：system + 一次注入真实数据 + 完整对话历史。
-// 通用 /api/ai/stream 已预留给其它页面。
-// 该模型为思维链蒸馏模型，始终会先思考再作答；思考过程可折叠查看。
-// ---------------------------------------------------------------------------
-const AI_PRESETS = [
-  { label: "🩺 互动健康度", ask: "请重点分析这首曲子的互动健康度：点赞率、投币率、收藏率、评论率、弹幕率各处于什么水平，哪些指标异常，说明原因。" },
-  { label: "🚀 破圈潜力", ask: "请重点评估这首曲子的破圈潜力：有没有可能被搬运、翻唱或二创，走向圈外，依据数据说明理由。" },
-  { label: "📣 运营建议", ask: "请给 UP 主一些可落地的运营建议：针对这首曲子的数据短板，具体该做哪些事来提升热度。" },
-  { label: "⚠️ 风险提示", ask: "请评估这首曲子当前的风险：是否存在热度见顶、数据异常、受众错位等问题，以及如何应对。" },
-]
-
-function SongAIAnalysis({ d }: { d: SongThink }) {
-  const [conv, setConv] = useState<AiTurn[]>([])
-  const [question, setQuestion] = useState("")
-  const [pending, setPending] = useState("")
-  const [reasoning, setReasoning] = useState("")
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [showReasoning, setShowReasoning] = useState(true)
-  const [cacheHit, setCacheHit] = useState(false)
-  const abortRef = useRef<AbortController | null>(null)
-  const bufRef = useRef("")
-  const rBufRef = useRef("")
-  const errRef = useRef(false)
-  const doneRef = useRef(false)
-  const cacheHitRef = useRef(false)
-  const [modelReady, setModelReady] = useState<boolean | null>(null)
-  const [modelInfo, setModelInfo] = useState<{ model?: string; active?: string; cloud?: boolean }>({})
-
-  useEffect(() => {
-    let alive = true
-    api
-      .aiHealth()
-      .then((r) => {
-        if (!alive) return
-        setModelReady(r.ready)
-        setModelInfo({ model: r.model, active: r.active, cloud: r.cloud })
-      })
-      .catch(() => alive && setModelReady(false))
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  const modelLabel =
-    modelInfo.cloud === true
-      ? `云端模型 ● ${modelInfo.model || ""}`
-      : modelInfo.active === "2b"
-        ? `本地模型 ● 2B（降级）`
-        : `本地模型 ● 4B`
-
-  // 切换歌曲时清空对话
-  useEffect(() => {
-    setConv([])
-    setPending("")
-    setReasoning("")
-    setError(null)
-    setQuestion("")
-    setCacheHit(false)
-    bufRef.current = ""
-    rBufRef.current = ""
-    errRef.current = false
-    doneRef.current = false
-    cacheHitRef.current = false
-  }, [d.bvid])
-
-  const run = (prefilled?: string) => {
-    if (loading) return
-    const text = (prefilled ?? question).trim()
-    if (conv.length > 0 && !text) return // 追问必须有内容
-    const userTurn: AiTurn = {
-      role: "user",
-      content: text || "请对该曲做一次全面的互动健康度与传播力分析。",
-    }
-    const history = [...conv, userTurn]
-    setConv(history)
-    setQuestion("")
-    setPending("")
-    setReasoning("")
-    setShowReasoning(true)
-    setError(null)
-    setCacheHit(false)
-    cacheHitRef.current = false
-    setLoading(true)
-    bufRef.current = ""
-    rBufRef.current = ""
-    errRef.current = false
-    doneRef.current = false
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-    api.aiStreamSong(d.bvid, history, {
-      signal: ctrl.signal,
-      onContent: (t) => {
-        bufRef.current += t
-        setPending(bufRef.current)
-      },
-      onReasoning: (t) => {
-        rBufRef.current += t
-        setReasoning(rBufRef.current)
-      },
-      onCache: (hit) => {
-        cacheHitRef.current = hit
-        setCacheHit(hit)
-      },
-      onError: (msg) => {
-        errRef.current = true
-        setError(msg)
-        setLoading(false)
-        abortRef.current = null
-      },
-      onDone: () => {
-        if (doneRef.current) return // 防止重复提交（onDone 只应触发一次）
-        doneRef.current = true
-        if (!errRef.current) {
-          setConv((c) => [
-            ...c,
-            {
-              role: "assistant",
-              content: bufRef.current,
-              reasoning: rBufRef.current,
-              cached: cacheHitRef.current,
-            },
-          ])
-        }
-        setPending("")
-        setLoading(false)
-        abortRef.current = null
-      },
-    })
-  }
-
-  const stop = () => {
-    abortRef.current?.abort()
-    setLoading(false)
-  }
-
-  const canSend = !loading && (conv.length === 0 || question.trim().length > 0)
-
-  // 单个 AI 气泡：思维链顶部内联 + 正文，可折叠；isLive 表示是否带光标（流式中）
-  const renderAi = (r: string, c: string, isLive: boolean) => (
-    <div className="ai-bubble ai">
-      {r && (
-        <details className="ai-think" open={showReasoning} onToggle={(e) => setShowReasoning((e.target as HTMLDetailsElement).open)}>
-          <summary>🧠 模型思考链</summary>
-          <div className="ai-reasoning-body">{r}</div>
-        </details>
-      )}
-      <div className="ai-bubble-main">
-        {c ? <MarkdownLite text={c} /> : isLive && <span className="ai-cursor-only">▍</span>}
-        {isLive && c && <span className="ai-cursor">▍</span>}
-      </div>
-    </div>
-  )
-
-  return (
-    <div className="ai-panel">
-      <div className="ai-head">
-        <div className="ai-title">
-          <Sparkles size={15} style={{ color: "var(--accent)", verticalAlign: -2 }} />
-          AI 分析师
-          <span className={`ai-dot ${modelReady === true ? "ok" : modelReady === false ? "bad" : ""}`} title={modelReady ? "本地模型已就绪" : "本地模型离线"}>
-            {modelReady === true ? modelLabel : modelReady === false ? "模型离线 ○" : "检测中…"}
-          </span>
-        </div>
-        <div className="ai-sub">基于上方真实互动数据，由 AI 大模型深度分析 · 可连续追问</div>
-      </div>
-
-      {/* 一键分析预设 */}
-      <div className="ai-presets">
-        {AI_PRESETS.map((p) => (
-          <button key={p.label} className="chip" disabled={loading} onClick={() => run(p.ask)}>
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      {/* 对话区 */}
-      <div className="ai-chat">
-        {conv.length === 0 && !pending && (
-          <div className="ai-empty">输入问题或点上方预设，AI 就会基于该曲真实数据给出深度分析 👇</div>
-        )}
-        {conv.map((t, i) =>
-          t.role === "user" ? (
-            <div key={i} className="ai-bubble user">{t.content}</div>
-          ) : (
-            <div key={`a-${i}`}>
-              {t.cached && <span className="ai-cache-badge">⚡ 命中缓存</span>}
-              {renderAi(t.reasoning || "", t.content, false)}
-            </div>
-          ),
-        )}
-        {(pending || reasoning) && (
-          <div key="ai-live">
-            {cacheHit && <span className="ai-cache-badge">⚡ 命中缓存 · 秒回</span>}
-            {renderAi(reasoning, pending, true)}
-          </div>
-        )}
-        {loading && !pending && !reasoning && (
-          <div className="ai-thinking">
-            {modelInfo.cloud
-              ? "AI 正在生成分析…（云端模型，通常数秒内返回）"
-              : "AI 正在深入思考并生成分析…（本地模型不限制思考长度，通常需要 1–4 分钟）"}
-          </div>
-        )}
-      </div>
-
-      {error && <div className="callout callout-err">分析失败：{error}（请确认本地模型服务已启动）</div>}
-
-      {/* 输入区 */}
-      <div className="ai-input-row">
-        <textarea
-          className="ai-input"
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              if (canSend) run()
-            }
-          }}
-          placeholder={conv.length === 0 ? "想让 AI 重点关注什么？如：它为什么能火 / 和同类术曲相比如何（留空则全面分析）" : "继续追问…（Enter 发送，Shift+Enter 换行）"}
-          rows={2}
-        />
-        {!loading ? (
-          <button className="chip primary" disabled={!canSend} onClick={() => run()}>
-            <Send size={13} style={{ marginRight: 5, verticalAlign: -2 }} />
-            发送
-          </button>
-        ) : (
-          <button className="chip" onClick={stop}>
-            <Square size={12} style={{ marginRight: 5, verticalAlign: -2, fill: "currentColor" }} />
-            停止
-          </button>
-        )}
-      </div>
-    </div>
   )
 }

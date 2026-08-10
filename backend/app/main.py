@@ -91,6 +91,9 @@ app.include_router(conversations.router)
 @app.on_event("startup")
 async def _startup():
     logger.info("%s v%s starting up", config.APP_NAME, config.APP_VERSION)
+    logger.info("source_db: %s", config.SOURCE_DB)
+    logger.info("data_dir: %s", config.DATA_DIR)
+    logger.info("cors_origins: %s", config.cors_origins())
     try:
         from .services import conv_store
 
@@ -119,4 +122,9 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": config.APP_VERSION}
+    return {
+        "status": "ok",
+        "version": config.APP_VERSION,
+        "app": config.APP_NAME,
+        "docs": "/docs",
+    }

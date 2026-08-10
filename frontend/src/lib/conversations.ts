@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import type { EChartsCoreOption } from "echarts/core"
 
 export type ToolCall = {
   id: string
@@ -7,7 +8,7 @@ export type ToolCall = {
   result?: string
   status?: "running" | "pending_confirm" | "confirmed" | "canceled" | "done"
   action?: string
-  payload?: any
+  payload?: unknown
   needConfirm?: boolean
   risk?: string
   isClient?: boolean
@@ -23,7 +24,7 @@ export type SourceItem = {
 export type ChartSpec = {
   id: string
   title?: string
-  option: any
+  option: EChartsCoreOption
 }
 
 export type AIMessage = {
@@ -101,7 +102,7 @@ if (typeof window !== "undefined") {
 // 后端不可用时静默降级，全部退化为纯前端 localStorage。
 // ---------------------------------------------------------------------------
 const CLIENT_KEY = "hb-agent-client-id"
-const BASE = (import.meta as any).env?.VITE_API_BASE ?? "http://127.0.0.1:8010"
+const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8010"
 
 function getClientId(): string {
   try {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+﻿import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowDown, ArrowUp, Download } from "lucide-react"
 import { Link } from "react-router-dom"
@@ -11,11 +11,11 @@ type SortKey = "rank" | "view" | "favorite" | "coin" | "like" | "score" | "weeks
 
 const ACCESSORS: Record<SortKey, (it: RankEntry) => number> = {
   rank: (it) => it.rank,
-  view: (it) => it.view ?? it.views ?? 0,
-  favorite: (it) => it.favorite ?? it.favorites ?? 0,
-  coin: (it) => it.coin ?? it.coins ?? 0,
-  like: (it) => it.like ?? it.likes ?? 0,
-  score: (it) => it.score ?? it.sum_score ?? 0,
+  view: (it) => it.view,
+  favorite: (it) => it.favorite,
+  coin: (it) => it.coin,
+  like: (it) => it.like,
+  score: (it) => it.score,
   weeks: (it) => it.weeks_on_board ?? 0,
 }
 
@@ -168,14 +168,14 @@ export function RankTable({
               <td className="num">{it.vocalists?.map((v) => v.name).join(" / ") ?? "—"}</td>
               {showStats && (
                 <>
-                  {hasView && <td className="num">{fmt(it.view ?? it.views)}</td>}
-                  <td className="num">{fmt(it.favorite ?? it.favorites)}</td>
-                  <td className="num">{fmt(it.coin ?? it.coins)}</td>
-                  <td className="num">{fmt(it.like ?? it.likes)}</td>
+                  {hasView && <td className="num">{fmt(it.view)}</td>}
+                  <td className="num">{fmt(it.favorite)}</td>
+                  <td className="num">{fmt(it.coin)}</td>
+                  <td className="num">{fmt(it.like)}</td>
                 </>
               )}
               <td className="score-cell">
-                {typeof it.score === "number" ? fmtScore(it.score) : fmtScore(it.sum_score)}
+                {fmtScore(it.score)}
               </td>
               {showRate && (
                 <td style={{ textAlign: "right" }}><Rate rate={it.rate} /></td>

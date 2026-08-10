@@ -72,12 +72,23 @@ export default function Layout() {
       <div
         className={`sidebar-backdrop${sidebarOpen ? " show" : ""}`}
         onClick={() => setSidebarOpen(false)}
-        aria-hidden
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setSidebarOpen(false) }}
+        role="button"
+        tabIndex={0}
+        aria-label="关闭侧边栏"
       />
       <aside className={`sidebar${sidebarOpen ? " open" : ""}`}>
         <div className="sidebar-head">
           <div className="logo">
-            <div className="mark">话</div>
+            <div className="mark" aria-label="huamei术力口">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+                <rect x="3" y="9" width="2" height="6" rx="1" opacity="0.65" />
+                <rect x="6.5" y="6" width="2" height="12" rx="1" opacity="0.85" />
+                <rect x="10" y="3" width="2" height="18" rx="1" />
+                <rect x="13.5" y="6" width="2" height="12" rx="1" opacity="0.85" />
+                <rect x="17" y="9" width="2" height="6" rx="1" opacity="0.65" />
+              </svg>
+            </div>
             <div>
               <div className="name">huamei术力口</div>
               <div className="sub">VOCALOID CHART</div>
@@ -118,7 +129,15 @@ export default function Layout() {
           <Menu size={20} />
         </button>
         <div className="brand-mini">
-          <span className="bm-mark">话</span> huamei术力口
+          <span className="bm-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <rect x="3" y="9" width="2" height="6" rx="1" opacity="0.65" />
+              <rect x="6.5" y="6" width="2" height="12" rx="1" opacity="0.85" />
+              <rect x="10" y="3" width="2" height="18" rx="1" />
+              <rect x="13.5" y="6" width="2" height="12" rx="1" opacity="0.85" />
+              <rect x="17" y="9" width="2" height="6" rx="1" opacity="0.65" />
+            </svg>
+          </span> huamei术力口
         </div>
         <button className="mobile-search" onClick={() => setPaletteOpen(true)} aria-label="搜索">
           <Search size={16} />

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "huamei-shulikou-backend"
+version = "0.1.0-preview"
+description = "huamei术力口后端 —— VOCALOID 周榜数据服务"
+requires-python = ">=3.13"
+license = { text = "CC BY-NC 4.0" }
+
+[project.scripts]
+uvicorn-run = "uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload"
+
+[tool.setuptools.packages.find]
+where = ["app"]

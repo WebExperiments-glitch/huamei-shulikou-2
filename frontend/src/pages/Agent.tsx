@@ -4,10 +4,11 @@ import { Bot, Send, Wrench, Loader2, AlertTriangle, Check, MessageSquarePlus, Tr
 import { api } from "../lib/api"
 import { useFavorites } from "../lib/favorites"
 import { useConversations } from "../lib/conversations"
-import type { AIMessage, ToolCall, SourceItem, ChartSpec } from "../lib/conversations"
+import type { AIMessage, ToolCall, SourceItem } from "../lib/conversations"
 import { Markdown } from "../lib/markdown"
+import { ChartCard } from "./Agent/ChartCard"
 
-const BASE = (import.meta as any).env?.VITE_API_BASE ?? "http://127.0.0.1:8010"
+const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8010"
 
 function prettyArgs(raw: string): string {
   try {
@@ -35,41 +36,6 @@ function formatTime(ts: number): string {
     d.getDate() === yest.getDate()
   if (isYest) return `昨天 ${hm}`
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
-}
-
-function ChartCard({ spec }: { spec: ChartSpec }) {
-  const ref = useRef<HTMLDivElement>(null)
-  // 图谱类图表（力导向图/树图/桑基/热力）需要更高画布
-  const tall =
-    Array.isArray((spec.option as any)?.series)
-      ? (spec.option as any).series.some((s: any) =>
-          ["graph", "tree", "treemap", "sankey", "heatmap", "scatter", "radar"].includes(s?.type)
-        )
-      : false
-  useEffect(() => {
-    let chart: any
-    let disposed = false
-    import("echarts")
-      .then((echarts) => {
-        if (!ref.current || disposed) return
-        chart = echarts.init(ref.current)
-        chart.setOption(spec.option)
-      })
-      .catch(() => {})
-    const onResize = () => chart?.resize()
-    window.addEventListener("resize", onResize)
-    return () => {
-      disposed = true
-      window.removeEventListener("resize", onResize)
-      chart?.dispose()
-    }
-  }, [spec])
-  return (
-    <div className="agent-chart-card">
-      {spec.title ? <div className="agent-chart-title">{spec.title}</div> : null}
-      <div ref={ref} className={`agent-chart${tall ? " agent-chart-tall" : ""}`} />
-    </div>
-  )
 }
 
 const EXAMPLES = [
@@ -104,7 +70,6 @@ export default function Agent() {
   const aiIdx = useRef<number>(-1)
   const convIdRef = useRef<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  // 只读 client 操作（如 list_favorites）执行后，等当前流结束自动 resume 让模型继续回答
   const pendingResumeRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const approvedRef = useRef<{ name: string; arguments: string }[]>([])
@@ -119,7 +84,6 @@ export default function Agent() {
   })
   const cloud = healthQ.data?.cloud === true
 
-  // 首次进入：若没有任何会话则自动建一个
   useEffect(() => {
     if (!useConversations.getState().activeId && useConversations.getState().conversations.length === 0) {
       createConversation()
@@ -157,18 +121,18 @@ export default function Agent() {
     URL.revokeObjectURL(url)
   }
 
-  function clientExec(action: string, payload: any): string {
+  function clientExec(action: string, payload: Record<string, unknown>): string {
     const fav = useFavorites.getState()
     if (action === "fav_song") {
-      fav.toggle({ bvid: payload.bvid, title: payload.title, title_cn: payload.title_cn })
+      fav.toggle({ bvid: payload.bvid as string, title: payload.title as string, title_cn: payload.title_cn as string })
       return `已收藏《${payload.title}》（${payload.bvid}）`
     }
     if (action === "unfav_song") {
-      fav.remove(payload.bvid)
+      fav.remove(payload.bvid as string)
       return `已取消收藏 ${payload.bvid}`
     }
     if (action === "add_note") {
-      fav.setNote(payload.bvid, payload.note)
+      fav.setNote(payload.bvid as string, payload.note as string)
       return `已为 ${payload.bvid} 添加笔记`
     }
     if (action === "list_favorites") {
@@ -204,7 +168,6 @@ export default function Agent() {
     const placeholder: AIMessage = { role: "assistant", content: "", reasoning: "", tools: [] }
     appendMessages(cid, [userMsg, placeholder])
 
-    // 首次用户消息自动命名为会话标题
     const conv = useConversations.getState().conversations.find((c) => c.id === cid)
     if (conv && (conv.title === "新对话" || !conv.title)) {
       renameConversation(cid, q.slice(0, 24))
@@ -219,7 +182,7 @@ export default function Agent() {
     const payloadMessages = useConversations
       .getState()
       .conversations.find((c) => c.id === cid)!
-      .messages.slice(0, -1) // 去掉占位 assistant
+      .messages.slice(0, -1)
       .map((m) => ({ role: m.role, content: m.content }))
 
     const ctrl = new AbortController()
@@ -232,7 +195,7 @@ export default function Agent() {
         signal: ctrl.signal,
       })
       if (!res.ok || !res.body) {
-        patchAssistant((m) => ({ ...m, content: m.content + `\n\n⚠️ 请求失败（HTTP ${res.status}）` }))
+        patchAssistant((m) => ({ ...m, content: m.content + `\n\n⚠️ 请求失败（HTTP ${res.status})` }))
         return
       }
       const reader = res.body.getReader()
@@ -250,23 +213,22 @@ export default function Agent() {
           if (!line) continue
           const payload = line.slice(5).trim()
           if (!payload || payload === "[DONE]") continue
-          let ev: any
+          let ev: unknown
           try {
             ev = JSON.parse(payload)
           } catch {
             continue
           }
-          handleEvent(ev)
+          handleEvent(ev as Record<string, unknown>)
         }
       }
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        patchAssistant((m) => ({ ...m, content: m.content + `\n\n⚠️ 网络错误：${e?.message ?? e}` }))
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name !== "AbortError") {
+        patchAssistant((m) => ({ ...m, content: m.content + `\n\n⚠️ 网络错误：${e.message ?? e}` }))
       }
     } finally {
       setLoading(false)
       abortRef.current = null
-      // 只读 client 操作执行完成后，自动 resume 让模型基于结果继续回答
       const pr = pendingResumeRef.current
       if (pr) {
         pendingResumeRef.current = null
@@ -275,34 +237,33 @@ export default function Agent() {
     }
   }
 
-  function handleEvent(ev: any) {
-    const t = ev?.type
+  function handleEvent(ev: Record<string, unknown>) {
+    const t = ev?.type as string
     if (t === "reasoning") {
-      patchAssistant((m) => ({ ...m, reasoning: (m.reasoning || "") + ev.text }))
+      patchAssistant((m) => ({ ...m, reasoning: (m.reasoning || "") + (ev.text as string) }))
     } else if (t === "content") {
-      patchAssistant((m) => ({ ...m, content: (m.content || "") + ev.text }))
+      patchAssistant((m) => ({ ...m, content: (m.content || "") + (ev.text as string) }))
     } else if (t === "tool_call") {
       patchAssistant((m) => ({
         ...m,
         tools: [
           ...(m.tools || []),
-          { id: ev.id, name: ev.name, arguments: ev.arguments, result: undefined, status: "running", isClient: ev.client },
+          { id: ev.id as string, name: ev.name as string, arguments: ev.arguments as string, result: undefined, status: "running", isClient: ev.client as boolean },
         ],
       }))
     } else if (t === "tool_result") {
       patchAssistant((m) => ({
         ...m,
-        tools: (m.tools || []).map((tl) => (tl.id === ev.id ? { ...tl, result: ev.content, status: "done" } : tl)),
+        tools: (m.tools || []).map((tl) => (tl.id === ev.id ? { ...tl, result: ev.content as string, status: "done" } : tl)),
       }))
     } else if (t === "client_action") {
       if (ev.need_confirm === false) {
-        // 只读客户端操作（list_favorites 等）：自动执行并标记 resume
-        const res = clientExec(ev.action, ev.payload || {})
+        const res = clientExec(ev.action as string, (ev.payload as Record<string, unknown>) || {})
         patchAssistant((m) => ({
           ...m,
           tools: (m.tools || []).map((tl) =>
             tl.id === ev.id
-              ? { ...tl, status: "confirmed", result: res, action: ev.action, payload: ev.payload, needConfirm: false, isClient: true }
+              ? { ...tl, status: "confirmed", result: res, action: ev.action as string, payload: ev.payload, needConfirm: false, isClient: true }
               : tl
           ),
         }))
@@ -312,7 +273,7 @@ export default function Agent() {
           ...m,
           tools: (m.tools || []).map((tl) =>
             tl.id === ev.id
-              ? { ...tl, status: "pending_confirm", action: ev.action, payload: ev.payload, needConfirm: ev.need_confirm, isClient: true }
+              ? { ...tl, status: "pending_confirm", action: ev.action as string, payload: ev.payload, needConfirm: ev.need_confirm as boolean, isClient: true }
               : tl
           ),
         }))
@@ -321,13 +282,13 @@ export default function Agent() {
       patchAssistant((m) => ({
         ...m,
         tools: (m.tools || []).map((tl) =>
-          tl.id === ev.id ? { ...tl, status: "pending_confirm", risk: ev.risk, isDanger: true } : tl
+          tl.id === ev.id ? { ...tl, status: "pending_confirm", risk: ev.risk as string, isDanger: true } : tl
         ),
       }))
     } else if (t === "error") {
       patchAssistant((m) => ({ ...m, content: (m.content || "") + `\n\n⚠️ ${ev.text}` }))
     } else if (t === "sources") {
-      const items: SourceItem[] = Array.isArray(ev.items) ? ev.items : []
+      const items: SourceItem[] = Array.isArray(ev.items) ? (ev.items as SourceItem[]) : []
       if (items.length) {
         patchAssistant((m) => {
           const prev = m.sources || []
@@ -337,7 +298,7 @@ export default function Agent() {
         })
       }
     } else if (t === "chart") {
-      const spec = { id: ev.id, title: ev.title, option: ev.option }
+      const spec = { id: ev.id as string, title: ev.title as string, option: ev.option }
       patchAssistant((m) => ({ ...m, charts: [...(m.charts || []), spec] }))
     } else if (t === "done") {
       // 结束由 finally 处理
@@ -357,7 +318,7 @@ export default function Agent() {
         }))
         return
       }
-      const res = clientExec(tool.action || "", tool.payload || {})
+      const res = clientExec(tool.action || "", (tool.payload as Record<string, unknown>) || {})
       patchAssistant((m) => ({
         ...m,
         tools: (m.tools || []).map((tl) => (tl.id === tool.id ? { ...tl, status: "confirmed", result: res } : tl)),
@@ -416,7 +377,6 @@ export default function Agent() {
   }, [conversations, search])
 
   useEffect(() => {
-    // 启动后从后端拉取会话（服务端备份）；离线则静默保留本地
     useConversations.getState().loadFromServer()
   }, [])
 

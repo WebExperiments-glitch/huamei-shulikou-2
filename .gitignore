@@ -55,10 +55,10 @@ llama-b10332-bin-win-vulkan-x64/
 # ===== 运行时日志（顶层）=====
 backend_runtime.log
 
-# ===== 第三方库 vendoring（如保留则删此条；当前随仓库发布以保证可离线构建）=====
+# ===== 第三方库 vendoring（BSD-3-Clause 宽松，允许随仓库发布；若需更轻量可删此目录并改 requirements.txt 指向 PyPI）=====
 # Scrapling-0.4.12/
 
-# ===== 已弃用：netease_encode_api（AGPLv3，与本项目 MIT 不兼容）=====
+# ===== 已弃用：netease_encode_api（AGPLv3，与本项目 CC BY-NC 4.0 不兼容）=====
 # 本地备份保留在磁盘，但不进入开源版本库；其搜索/详情/评论功能已由
 # 项目自带的 backend/app/vendor/weencrypt.py（MIT，自实现 WeAPI 加密）替代。
 backend/app/vendor/netease_encode_api/

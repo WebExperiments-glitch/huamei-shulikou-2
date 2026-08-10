@@ -1,101 +1,52 @@
-# 术力口周榜 · VOCALOID Weekly Board
+# huamei术力口 — VOCALOID 周榜实时追踪
 
-从零复刻的 **B 站术力口（中文 VOCALOID）周榜**：全量自采 + 公式透明 + API 可核验。
-不仅给出榜单，还把打分公式、实时增量、传说曲晋升链路全部开放出来，任何人都能用同一套数据复现结果。
+> v0.1.0-preview | CC BY-NC 4.0
 
-> 术力口 = 中文社区对用 VOCALOID / 歌声合成引擎创作的歌曲的统称。
+实时追踪 B 站 VOCALOID 每周排行榜、传说曲、神话曲数据，提供多维度榜单、数据分析与 AI 智能体。
 
-## 特性
+## 功能
 
-- **榜单透明**：周榜 / 年榜 / 传说曲榜，计分公式完全公开可核验（见下文「计分公式」）。
-- **实时热度**：综合榜（累计口径）+ 涨速榜（增量口径），对比相邻快照自动计算播放/收藏/硬币/点赞增量。
-- **AI 智能体（Agents）**：19 个工具——周榜/年榜/传说曲/单曲详情/检索/作者作品/趋势/对比/筛选/联网搜索/网页抓取，以及用户收藏、笔记、导出报告、触发刷新/重建/重算等权限操作（写操作与系统任务需用户确认）。
-- **多会话**：对话自动保存，支持新建 / 切换 / 重命名 / 删除 / 搜索 / 置顶，并可在后端 SQLite 备份（不怕清浏览器缓存）。
-- **网易云音乐集成**：单曲 / 歌手 / 专辑 / 歌单搜索与详情。
-
-## 技术栈
-
-| 层 | 技术 |
-|---|---|
-| 前端 | React 18 + Vite + TypeScript + zustand + TanStack Query + Tailwind |
-| 后端 | FastAPI + SQLite + httpx |
-| AI | 本地 llama.cpp（4B/2B 蒸馏，自动故障转移）或 云端 OpenAI 兼容端点（DeepSeek 等） |
-
-## 目录
-
-```
-术力口/
-├── backend/          FastAPI 服务（app/）
-├── frontend/         React 前端（src/）
-├── data/             本地数据库（不进版本库，运行时生成）
-├── .env.example      后端配置模板
-└── README.md
-```
+- **官方榜单** — 周榜 / 传说曲榜 / 年榜，含历史回溯与公式拆解
+- **自建榜单** — 月榜 / 日榜，基于官方数据聚合
+- **实时热度** — 快照差分计算涨速，综合排名 + 涨速榜
+- **歌曲库** — 多维度筛选（P主 / 歌姬 / 分级 / 播放量），全文搜索
+- **P主榜 / 歌姬榜** — 统计上榜作品数、播放量、传说曲/神话曲数量
+- **AI 智能体** — DeepSeek 云端模型，ReAct 回路 + 工具调用 + 联网搜索
+- **网易云音乐** — 搜索、播放、歌词，自研 WeAPI 加密
+- **数据分析** — 歌曲对比、年度回顾、传说曲晋升时间线
+- **主题切换** — 浅色 / 深色一键切换，移动端响应式
 
 ## 快速开始
 
-### 1. 后端
-
 ```bash
+# 1. 启动后端
 cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload
 
-cp .env.example .env        # 然后填入你的密钥（见「配置」）
-uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload
-```
-
-### 2. 前端
-
-```bash
+# 2. 启动前端
 cd frontend
 npm install
 npm run dev
 ```
 
-打开 http://localhost:5173 即可使用。
+浏览器打开 `http://localhost:5173`
 
-## 配置（`backend/.env`）
+> 详细文档见 [backend/README.md](backend/README.md)、[frontend/README.md](frontend/README.md)、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-| 变量 | 说明 |
+## 技术栈
+
+| 层 | 技术 |
 |---|---|
-| `AI_BASE_URL` + `AI_API_KEY` | 启用**云端 AI**（OpenAI 兼容端点，如 DeepSeek）。填了即跳过本地 4B/2B 故障转移。 |
-| `AI_MODEL` | 云端模型名，默认 `deepseek-v4-flash`。 |
-| `WEB_SEARCH_PROVIDER` + 对应 key | 智能体联网搜索（可选）。支持 `tavily` / `brave` / `exa` / `searxng` / `duckduckgo`（兜底）。推荐 Tavily（AI 原生，免费额度）。 |
-| `SOURCE_DB` | 官方 biliboard 数据源路径（环境变量）。默认相对推算到仓库外的同级目录；若你的数据库在别处，请用此变量覆盖。 |
+| 前端 | React 19 / TypeScript / Vite 8 / ECharts |
+| 后端 | FastAPI 0.139 / Python 3.13+ |
+| 数据 | SQLite / B 站 API / Scrapling |
+| AI | DeepSeek-V4-Flash / llama.cpp（本地推理） |
 
-> 不配置 AI 也能跑（本地模型或纯数据接口）；但智能体对话需要 AI。不配置联网搜索则 `web_search` 会优雅降级。
+## 许可证
 
-## 计分公式
+本项目采用 [CC BY-NC 4.0](LICENSE)（署名-非商业性使用 4.0 国际版）许可。
 
-分界点 = issue 54（含）起为新公式。
-
-**新公式（issue ≥ 54，现行）**
-
-```
-得分 = Δview·t + 15·Δfav + 3·Δlike + 30·Δcoin
-
-t = log10(e^(Δt/86400/14) + 1) + 1
-Δt = pubtime − 本周起始快照时刻（秒），老曲 Δt<0 时钳制 t=1
-```
-
-必须 `log10`（非 ln），且以「本周起始快照」为锚点（非日历天 / 结束锚点），否则新曲加成量级会整体错位。
-
-旧公式（issue < 54）：`得分 = 2·Δview·t + 30·Δfav + 3·Δlike + 10·Δcoin`，t 为阶梯函数。
-
-## API 概览
-
-- `GET  /api/health` 服务健康
-- `GET  /api/boards` 榜单列表
-- `GET  /api/stats/artists`、`/api/stats/vocalists` 统计
-- `POST /api/ai/agent` AI 智能体（SSE 流式，工具循环）
-- `GET/POST/DELETE /api/conversations` 会话后端备份（按匿名 client_id 隔离）
-- `POST /api/netease/search`、`/api/netease/song` 网易云
-
-## 开源声明
-
-本项目**不含任何密钥或隐私数据**：`.env`、`.mcp.json`、本地数据库（`data/`）、临时脚本、`.workbuddy/` 均通过 `.gitignore` 排除。部署时请自行配置密钥与数据源。
-
-## License
-
-[MIT](./LICENSE)
+- 可自由分享、修改、再创作
+- 必须署名原作者
+- 禁止商业用途

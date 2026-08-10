@@ -6,6 +6,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+function normalizeRankEntry(raw: any): RankEntry {
+  return {
+    rank: raw.rank ?? 0,
+    bvid: raw.bvid ?? "",
+    title: raw.title ?? "",
+    title_cn: raw.title_cn ?? null,
+    view: raw.view ?? raw.views ?? 0,
+    favorite: raw.favorite ?? raw.favorites ?? 0,
+    coin: raw.coin ?? raw.coins ?? 0,
+    like: raw.like ?? raw.likes ?? 0,
+    share: raw.share ?? 0,
+    score: raw.score ?? raw.sum_score ?? 0,
+    pubtime: raw.pubtime,
+    first_recorded_at: raw.first_recorded_at,
+    last_rank: raw.last_rank ?? null,
+    weeks_on_board: raw.weeks_on_board,
+    peak_rank: raw.peak_rank,
+    rate: raw.rate ?? null,
+    producers: raw.producers,
+    vocalists: raw.vocalists,
+    issue: raw.issue,
+    issue_date: raw.issue_date,
+    name: raw.name,
+    best_rank: raw.best_rank,
+  }
+}
+
 // ---- 本地大模型 SSE 流式读取 ----
 export interface AIStreamHandlers {
   onContent?: (text: string) => void
@@ -83,14 +110,18 @@ export const api = {
   boards: () => request<{ boards: BoardInfo[] }>("/api/boards"),
   boardIssues: (type: string) =>
     request<{ board_type: string; issues: IssueInfo[] }>(`/api/boards/${type}/issues`),
-  rankings: (type: string, issue: string, top = 100) =>
-    request<{ board_type: string; issue: string; date: string; items: RankEntry[] }>(
+  rankings: async (type: string, issue: string, top = 100) => {
+    const raw = await request<{ board_type: string; issue: string; date: string; items: any[] }>(
       `/api/boards/${type}/issues/${issue}/rankings?top=${top}`,
-    ),
-  songHistory: (type: string, bvid: string) =>
-    request<{ board_type: string; bvid: string; history: RankEntry[] }>(
+    )
+    return { ...raw, items: raw.items.map(normalizeRankEntry) }
+  },
+  songHistory: async (type: string, bvid: string) => {
+    const raw = await request<{ board_type: string; bvid: string; history: any[] }>(
       `/api/boards/${type}/song/${bvid}/history`,
-    ),
+    )
+    return { ...raw, history: raw.history.map(normalizeRankEntry) }
+  },
   boardSparklines: (type: string, issue: string, count = 10) =>
     request<{ board_type: string; issue: string; count: number; sparklines: Record<string, (number | null)[]> }>(
       `/api/boards/${type}/issues/${issue}/sparklines?count=${count}`,
@@ -142,10 +173,16 @@ export const api = {
   translate: (bvid: string, title: string, target: "en" | "zh") =>
     request<TranslateResult>(`/api/translate?bvid=${encodeURIComponent(bvid)}&title=${encodeURIComponent(title)}&target=${target}`),
   song: (bvid: string) => request<Song>(`/api/songs/${bvid}`),
-  allHistory: (bvid: string) =>
-    request<{ song: Song; histories: Record<string, RankEntry[]> }>(
+  allHistory: async (bvid: string) => {
+    const raw = await request<{ song: Song; histories: Record<string, any[]> }>(
       `/api/songs/${bvid}/all-history`,
-    ),
+    )
+    const normalized: Record<string, RankEntry[]> = {}
+    for (const [key, items] of Object.entries(raw.histories)) {
+      normalized[key] = items.map(normalizeRankEntry)
+    }
+    return { song: raw.song, histories: normalized }
+  },
   scoreBreakdown: (bvid: string, board = "weekly") =>
     request<ScoreBreakdown>(`/api/songs/${bvid}/score-breakdown?board=${board}`),
   artists: (limit = 5000) =>
