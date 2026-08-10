@@ -1,0 +1,16 @@
+# 术力口周榜后端依赖（按 venv-default 实际版本锁定）
+# 安装：C:\...\venv-default\Scripts\python.exe -m pip install -r requirements.txt
+# 注：scrapling 为 editable 安装（指向本地 Scrapling-main），不在此处固定版本。
+
+anyio==4.14.1
+fastapi==0.139.0
+httpx==0.28.1
+lxml==6.1.1
+numpy==2.5.0
+pandas==3.0.3
+pydantic==2.13.4
+requests==2.34.2
+starlette==1.3.1
+uvicorn==0.51.0
+pycryptodome==3.23.0
+# 网易云 weapi 加密由 backend/app/vendor/weencrypt.py 自实现（MIT），仅依赖 pycryptodome（上方已锁定）

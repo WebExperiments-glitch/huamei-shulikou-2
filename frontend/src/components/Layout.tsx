@@ -1,0 +1,135 @@
+import { useEffect, useState } from "react"
+import { NavLink, Outlet, useLocation } from "react-router-dom"
+import {
+  LayoutDashboard, Trophy, Crown, CalendarDays, Sun, Clock, Flame, Mic2, Activity,
+  Search, GitCompareArrows, BarChart3, Moon, Sigma, Music2, Heart, Menu, X, Star, Bot,
+} from "lucide-react"
+import type { LucideIcon } from "lucide-react"
+import CommandPalette from "./CommandPalette"
+import RefreshButton from "./RefreshButton"
+import ErrorBoundary from "./ErrorBoundary"
+import { useTheme } from "../lib/theme"
+
+interface NavItem { label: string; to: string; icon: LucideIcon }
+interface NavGroup { group: string }
+
+const nav: (NavItem | NavGroup)[] = [
+  { group: "榜单" },
+  { label: "总览", to: "/", icon: LayoutDashboard },
+  { label: "周榜", to: "/board/weekly", icon: Trophy },
+  { label: "传说曲周榜", to: "/board/legend", icon: Crown },
+  { label: "年榜 / 半年榜", to: "/board/annual", icon: CalendarDays },
+  { label: "年度回顾", to: "/annual", icon: Star },
+  { label: "传说曲晋升", to: "/legend-timeline", icon: Crown },
+  { label: "月榜（聚合）", to: "/monthly", icon: Sun },
+  { label: "日榜（快照）", to: "/daily", icon: Clock },
+  { group: "数据" },
+  { label: "歌曲库", to: "/songs", icon: Flame },
+  { label: "P主榜", to: "/artists", icon: Mic2 },
+  { label: "歌姬榜", to: "/vocalists", icon: Mic2 },
+  { group: "分析" },
+  { label: "歌曲对比", to: "/compare", icon: GitCompareArrows },
+  { label: "数据分析", to: "/analytics", icon: BarChart3 },
+  { label: "公式与试算", to: "/formula", icon: Sigma },
+  { group: "实时" },
+  { label: "实时热度", to: "/hot", icon: Activity },
+  { label: "AI 智能体", to: "/agent", icon: Bot },
+  { group: "网易云" },
+  { label: "网易云", to: "/netease", icon: Music2 },
+  { group: "我的" },
+  { label: "收藏的歌曲", to: "/favorites", icon: Heart },
+]
+
+export default function Layout() {
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const { theme, toggle } = useTheme()
+  const location = useLocation()
+
+  // 移动端：路由切换时自动收起抽屉
+  useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+
+  // 抽屉开启时锁定 body 滚动
+  useEffect(() => {
+    document.body.style.overflow = sidebarOpen ? "hidden" : ""
+    return () => { document.body.style.overflow = "" }
+  }, [sidebarOpen])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+      if (e.key === "Escape") setSidebarOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+
+  return (
+    <div className="layout">
+      <div
+        className={`sidebar-backdrop${sidebarOpen ? " show" : ""}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-hidden
+      />
+      <aside className={`sidebar${sidebarOpen ? " open" : ""}`}>
+        <div className="sidebar-head">
+          <div className="logo">
+            <div className="mark">话</div>
+            <div>
+              <div className="name">huamei术力口</div>
+              <div className="sub">VOCALOID CHART</div>
+            </div>
+          </div>
+          <button className="sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="关闭菜单">
+            <X size={18} />
+          </button>
+        </div>
+        <button className="sidebar-search" onClick={() => setPaletteOpen(true)}>
+          <Search size={13} />
+          <span>搜索 / 跳转</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <button className="sidebar-search" onClick={toggle} title="切换深浅主题">
+          {theme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
+          <span>{theme === "dark" ? "浅色模式" : "深色模式"}</span>
+        </button>
+        <RefreshButton />
+        {nav.map((item, i) =>
+          "group" in item ? (
+            <div className="nav-group" key={i}>{item.group}</div>
+          ) : (
+            <NavLink
+              key={i}
+              to={item.to}
+              end={item.to === "/"}
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+            >
+              <item.icon />
+              {item.label}
+            </NavLink>
+          ),
+        )}
+      </aside>
+      <div className="mobile-topbar">
+        <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="打开菜单">
+          <Menu size={20} />
+        </button>
+        <div className="brand-mini">
+          <span className="bm-mark">话</span> huamei术力口
+        </div>
+        <button className="mobile-search" onClick={() => setPaletteOpen(true)} aria-label="搜索">
+          <Search size={16} />
+        </button>
+      </div>
+      <main className="main">
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
+      </main>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+    </div>
+  )
+}

@@ -1,0 +1,64 @@
+# ===== 依赖 =====
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# ===== 构建产物 =====
+dist/
+frontend/dist/
+build/
+
+# ===== 密钥 / 环境变量（切勿提交，含 AI / Tavily 等真实 key）=====
+.env
+.env.*
+!.env.example
+.mcp.json
+
+# ===== 本地数据库（含官方数据源，体积大且含本地路径，不进版本库）=====
+data/
+*.sqlite
+*.sqlite3
+*.db
+biliboard-database/
+
+# ===== 临时测试脚本（开发用，不进版本库）=====
+backend/.agent_*.py
+backend/probe_*.py
+backend/.webfetch_test/
+
+# ===== 本地工作区 / 记忆（不对外）=====
+.workbuddy/
+
+# ===== 编辑器 / 系统 =====
+.idea/
+.vscode/
+*.swp
+.DS_Store
+*.log
+
+# ===== AI 模型与本地推理运行时（体积巨大，不进版本库；使用者需自备）=====
+# GGUF 权重（4B/2B 等，单文件 1~3GB）
+*.gguf
+# 本地推理目录：含模型、llama.cpp Windows 二进制、探针与日志
+ai agents/
+llama-b10332-bin-win-vulkan-x64/
+# 模型探针 / 临时二进制
+.full_probe.bin
+.head_chunk.bin
+.umi.js
+.llama*.log
+.ms_search.html
+
+# ===== 运行时日志（顶层）=====
+backend_runtime.log
+
+# ===== 第三方库 vendoring（如保留则删此条；当前随仓库发布以保证可离线构建）=====
+# Scrapling-0.4.12/
+
+# ===== 已弃用：netease_encode_api（AGPLv3，与本项目 MIT 不兼容）=====
+# 本地备份保留在磁盘，但不进入开源版本库；其搜索/详情/评论功能已由
+# 项目自带的 backend/app/vendor/weencrypt.py（MIT，自实现 WeAPI 加密）替代。
+backend/app/vendor/netease_encode_api/
