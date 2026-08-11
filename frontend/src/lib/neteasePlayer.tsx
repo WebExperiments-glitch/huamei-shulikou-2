@@ -53,7 +53,7 @@ export function NeteasePlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const queueRef = useRef<NeteaseTrack[]>([])
   queueRef.current = queue
-  const current = index >= 0 && index < queue.length ? queue[index] : null
+  const current: NeteaseTrack | null = index >= 0 && index < queue.length ? queue[index]! : null
 
   const loadAndPlay = useCallback(async (track: NeteaseTrack) => {
     setLoading(true); setError(null)
@@ -84,7 +84,7 @@ export function NeteasePlayerProvider({ children }: { children: ReactNode }) {
 
   // index / queue 变化 → 加载并播放当前曲
   useEffect(() => {
-    if (index >= 0 && index < queue.length) loadAndPlay(queue[index])
+    if (index >= 0 && index < queue.length) loadAndPlay(queue[index]!)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, queue])
 

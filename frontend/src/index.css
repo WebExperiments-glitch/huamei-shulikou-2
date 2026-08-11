@@ -150,6 +150,67 @@ a:hover { text-decoration: underline; }
   font-size: 10.5px; color: var(--text-faint); font-weight: 500;
   border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px;
 }
+.card-title .formula-badge {
+  font-weight: 700; letter-spacing: 0.3px;
+}
+.card-title .formula-new {
+  color: #0a84d8; border-color: rgba(10,132,216,0.45); background: rgba(10,132,216,0.08);
+}
+.card-title .formula-old {
+  color: #b06e00; border-color: rgba(176,110,0,0.45); background: rgba(176,110,0,0.10);
+}
+[data-theme="dark"] .card-title .formula-new {
+  color: #4db2ff; border-color: rgba(77,178,255,0.5); background: rgba(77,178,255,0.12);
+}
+[data-theme="dark"] .card-title .formula-old {
+  color: #ffb94d; border-color: rgba(255,185,77,0.5); background: rgba(255,185,77,0.12);
+}
+
+/* 战力标签 & 最高排名徽章（歌手/P主战力榜） */
+.tag-power {
+  color: #8b5cf6; border-color: rgba(139,92,246,0.45); background: rgba(139,92,246,0.10);
+}
+[data-theme="dark"] .tag-power {
+  color: #b794f6; border-color: rgba(183,148,246,0.5); background: rgba(183,148,246,0.14);
+}
+.rank-badge {
+  display: inline-block; min-width: 30px; text-align: center;
+  font-weight: 700; color: #c0392b;
+  background: rgba(192,57,43,0.10); border: 1px solid rgba(192,57,43,0.35);
+  border-radius: 6px; padding: 1px 6px;
+}
+[data-theme="dark"] .rank-badge {
+  color: #ff8a7a; background: rgba(255,138,122,0.12); border-color: rgba(255,138,122,0.4);
+}
+
+/* 公式版本标签（旧/新） */
+.tag-old {
+  color: #b06e00; border-color: rgba(176,110,0,0.45); background: rgba(176,110,0,0.10);
+}
+.tag-new {
+  color: #0a84d8; border-color: rgba(10,132,216,0.45); background: rgba(10,132,216,0.08);
+}
+[data-theme="dark"] .tag-old {
+  color: #ffb94d; border-color: rgba(255,185,77,0.5); background: rgba(255,185,77,0.12);
+}
+[data-theme="dark"] .tag-new {
+  color: #4db2ff; border-color: rgba(77,178,255,0.5); background: rgba(77,178,255,0.12);
+}
+
+/* 期详情公式版本说明条 */
+.formula-note {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-card, transparent);
+  line-height: 1.5;
+}
+.formula-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+}
+.formula-dot.formula-new { background: #0a84d8; box-shadow: 0 0 6px rgba(10,132,216,0.6); }
+.formula-dot.formula-old { background: #b06e00; box-shadow: 0 0 6px rgba(176,110,0,0.6); }
+[data-theme="dark"] .formula-dot.formula-new { background: #4db2ff; }
+[data-theme="dark"] .formula-dot.formula-old { background: #ffb94d; }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
@@ -590,7 +651,7 @@ th.num-th { text-align: right; }
 /* 刷新数据面板 */
 .spin { animation: spin 1s linear infinite; }
 .sync-panel {
-  position: fixed; right: 16px; bottom: 16px; z-index: 50;
+  position: fixed; right: 16px; bottom: 16px; z-index: 2147483001;
   width: 340px; max-height: 60vh; display: flex; flex-direction: column;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
   box-shadow: 0 12px 40px rgba(0,0,0,.32); overflow: hidden;

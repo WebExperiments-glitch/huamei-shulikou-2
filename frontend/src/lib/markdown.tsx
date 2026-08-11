@@ -40,7 +40,7 @@ export function Markdown({ text }: { text: string }) {
   let key = 0
 
   while (i < lines.length) {
-    const line = lines[i]
+    const line = lines[i]!
     if (line.trim() === "") {
       i++
       continue
@@ -48,17 +48,17 @@ export function Markdown({ text }: { text: string }) {
     // 标题
     const h = /^(#{1,4})\s+(.*)$/.exec(line)
     if (h) {
-      const level = h[1].length
+      const level = h[1]!.length
       const Tag = (`h${level}` as unknown) as ElementType
-      blocks.push(<Tag key={key++}>{renderInline(h[2])}</Tag>)
+      blocks.push(<Tag key={key++}>{renderInline(h[2]!)}</Tag>)
       i++
       continue
     }
     // 无序列表
     if (/^[-*]\s+/.test(line)) {
       const items: string[] = []
-      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*]\s+/, ""))
+      while (i < lines.length && /^[-*]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^[-*]\s+/, ""))
         i++
       }
       blocks.push(
@@ -73,8 +73,8 @@ export function Markdown({ text }: { text: string }) {
     // 有序列表
     if (/^\d+\.\s+/.test(line)) {
       const items: string[] = []
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+\.\s+/, ""))
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\d+\.\s+/, ""))
         i++
       }
       blocks.push(
@@ -88,8 +88,8 @@ export function Markdown({ text }: { text: string }) {
     }
     // 段落
     const para: string[] = []
-    while (i < lines.length && lines[i].trim() !== "") {
-      para.push(lines[i])
+    while (i < lines.length && lines[i]!.trim() !== "") {
+      para.push(lines[i]!)
       i++
     }
     blocks.push(<p key={key++}>{renderInline(para.join("\n"))}</p>)

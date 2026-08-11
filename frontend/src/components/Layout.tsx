@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom"
 import {
   LayoutDashboard, Trophy, Crown, CalendarDays, Sun, Clock, Flame, Mic2, Activity,
   Search, GitCompareArrows, BarChart3, Moon, Sigma, Music2, Heart, Menu, X, Star, Bot,
+  Download, TrendingUp,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import CommandPalette from "./CommandPalette"
@@ -31,9 +32,13 @@ const nav: (NavItem | NavGroup)[] = [
   { label: "歌曲对比", to: "/compare", icon: GitCompareArrows },
   { label: "数据分析", to: "/analytics", icon: BarChart3 },
   { label: "公式与试算", to: "/formula", icon: Sigma },
+  { label: "公式实验室", to: "/formula-lab", icon: Sigma },
+  { label: "下期冲榜预测", to: "/predict", icon: TrendingUp },
   { group: "实时" },
   { label: "实时热度", to: "/hot", icon: Activity },
   { label: "AI 智能体", to: "/agent", icon: Bot },
+  { group: "工具" },
+  { label: "数据导出", to: "/export", icon: Download },
   { group: "网易云" },
   { label: "网易云", to: "/netease", icon: Music2 },
   { group: "我的" },

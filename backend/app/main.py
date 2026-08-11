@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
-from .api import ai, boards, hot, netease, selfbuilt, songs, stats, sync, translate, conversations
+from .api import ai, boards, cache, hot, netease, predict, selfbuilt, songs, stats, sync, translate, conversations
 from .core import config
 
 # ---------------------------------------------------------------------------
@@ -81,11 +81,13 @@ app.include_router(songs.router)
 app.include_router(stats.router)
 app.include_router(selfbuilt.router)
 app.include_router(hot.router)
+app.include_router(predict.router)
 app.include_router(translate.router)
 app.include_router(sync.router)
 app.include_router(ai.router)
 app.include_router(netease.router)
 app.include_router(conversations.router)
+app.include_router(cache.router)
 
 
 @app.on_event("startup")
@@ -94,6 +96,16 @@ async def _startup():
     logger.info("source_db: %s", config.SOURCE_DB)
     logger.info("data_dir: %s", config.DATA_DIR)
     logger.info("cors_origins: %s", config.cors_origins())
+    # robots.txt 合规自检：启动期汇报各外部数据源的策略，便于审计。
+    try:
+        from .core import robots as robots_mod
+
+        for _h in ("biliboard.uk", "api.bilibili.com", "music.163.com", "www.bilibili.com"):
+            logger.info("robots[%s]: %s", _h, robots_mod.summary(_h))
+        if robots_mod.STRICT:
+            logger.warning("robots: ROBOTS_STRICT=1 → 被禁 host 的实时抓取已禁用（仅用历史快照）")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("robots startup check failed: %s", exc)
     try:
         from .services import conv_store
 

@@ -60,7 +60,7 @@ export default function LegendTimeline() {
       const h = histories[i]?.data?.history
       if (!h || !h.length) return
       const sorted = h.slice().sort((a, b) => (a.issue ?? "").localeCompare(b.issue ?? ""))
-      const first = sorted[0]
+      const first = sorted[0]!
       const legendAt = { issue: first.issue ?? "", date: issueToDate(first.issue ?? ""), view: viewOf(first) }
       let mythAt: { issue: string; date: string; view: number } | null = null
       for (const e of sorted) {

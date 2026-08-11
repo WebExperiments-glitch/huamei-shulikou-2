@@ -44,11 +44,11 @@ export default function Compare() {
   const series = useMemo(() => {
     const set = new Set<string>()
     selected.forEach((_, i) => {
-      ;(histories[i].data?.histories.weekly ?? []).forEach((w: RankEntry) => w.issue && set.add(w.issue))
+      ;(histories[i]?.data?.histories.weekly ?? []).forEach((w: RankEntry) => w.issue && set.add(w.issue))
     })
     const issues = Array.from(set).sort()
     return { issues, series: selected.map((s, i) => {
-      const weekly = (histories[i].data?.histories.weekly ?? []) as RankEntry[]
+      const weekly = (histories[i]?.data?.histories.weekly ?? []) as RankEntry[]
       const map = new Map(weekly.map((w) => [w.issue as string, metric === "rank" ? w.rank : w.score]))
       const color = COLORS[i % COLORS.length]
       return {

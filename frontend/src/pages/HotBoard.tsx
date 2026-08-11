@@ -132,9 +132,9 @@ export default function HotBoard() {
   const pct =
     st && st.total > 0 ? Math.min(100, Math.round((st.done / st.total) * 100)) : 0
 
-  const currentLabel = SORTS.find((s) => s.key === sort)?.label ?? SORTS[0].label
-  const currentTierLabel = TIERS.find((t) => t.key === tier)?.label ?? TIERS[0].label
-  const currentMMetricLabel = MOMENTUM_METRICS.find((m) => m.key === mMetric)?.label ?? MOMENTUM_METRICS[0].label
+  const currentLabel = SORTS.find((s) => s.key === sort)?.label ?? SORTS[0]?.label ?? ""
+  const currentTierLabel = TIERS.find((t) => t.key === tier)?.label ?? TIERS[0]?.label ?? ""
+  const currentMMetricLabel = MOMENTUM_METRICS.find((m) => m.key === mMetric)?.label ?? MOMENTUM_METRICS[0]?.label ?? ""
 
   return (
     <>

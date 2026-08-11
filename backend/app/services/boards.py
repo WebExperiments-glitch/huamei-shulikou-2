@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..core import db
-from .rank import DEFAULT_WEIGHTS, time_correction
+from .rank import DEFAULT_WEIGHTS, NEW_FORMULA_FROM_ISSUE, time_correction
 
 PREFIXES = {"weekly": "official_", "legend": "legend_", "annual": "annual_"}
 
@@ -42,18 +42,35 @@ def list_issues(conn, board_type: str) -> list[dict]:
         if not ISSUE_RE.match(key):
             continue
         try:
-            row = conn.execute(f'SELECT is_annual, COUNT(*) AS n FROM "{t}"').fetchone()
-            is_annual = int(row["is_annual"] or 0) if row else 0
+            # weekly 表无 is_annual 列（legend/annual 才有），动态构造查询
+            cols = {c[1] for c in conn.execute(f'PRAGMA table_info("{t}")').fetchall()}
+            sel = "COUNT(*) AS n, MIN(issue_id) AS iid" + (", MAX(is_annual) AS ia" if "is_annual" in cols else ", 0 AS ia")
+            row = conn.execute(f'SELECT {sel} FROM "{t}"').fetchone()
+            is_annual = int(row["ia"] or 0) if row else 0
             n = int(row["n"]) if row else 0
+            iid = row["iid"] if row else None
         except Exception:
-            is_annual, n = 0, 0
+            is_annual, n, iid = 0, 0, None
         issues.append({
             "issue": key,
             "date": f"{key[:4]}-{key[4:6]}-{key[6:]}",
             "entries": n,
             "is_annual": is_annual,
+            "issue_id": iid,  # 官方期号（weekly/annual 表含该列；legend 表无）
         })
     issues.sort(key=lambda x: x["issue"], reverse=True)
+    # 附加期序号（按日期升序，1-based）与公式版本。
+    # 周榜以官方期号 54 为界（旧 <54：2·Δview·t + 30Δfav + 3Δlike + 10Δcoin；
+    #                         新 ≥54：Δview·t + 15Δfav + 3Δlike + 30Δcoin）。
+    # 优先用表内 issue_id（weekly 与官方期号精确对应）；legend/annual 表无 issue_id
+    # 或不受该分界影响（其建立时间均晚于新公式时代），一律视为新公式。
+    total = len(issues)
+    for i, iss in enumerate(issues):
+        iss["seq"] = total - i  # 列表为降序，最早的期 seq=1
+        if board_type == "weekly" and iss["issue_id"] is not None:
+            iss["formula_version"] = "old" if iss["issue_id"] < NEW_FORMULA_FROM_ISSUE else "new"
+        else:
+            iss["formula_version"] = "new"
     return issues
 
 

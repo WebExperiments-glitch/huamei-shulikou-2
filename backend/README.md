@@ -45,16 +45,18 @@ backend/
     │   ├── songs.py       # 歌曲接口
     │   ├── stats.py       # 统计接口
     │   ├── hot.py         # 实时热度接口
+    │   ├── predict.py     # 下期冲榜预测接口
     │   ├── ai.py          # AI 对话/智能体接口
     │   ├── netease.py     # 网易云音乐接口
     │   ├── sync.py        # 同步管理接口
     │   ├── translate.py   # 翻译接口
     │   ├── selfbuilt.py   # 自建榜接口
+    │   ├── cache.py       # 缓存管理接口（持久化 SQL）
     │   └── conversations.py # AI 会话接口
     ├── core/              # 基础设施
     │   ├── config.py      # 配置管理
     │   ├── db.py          # 数据库连接
-    │   ├── cache.py       # TTL 内存缓存（@cached 装饰器）
+    │   ├── cache.py       # TTL 持久化缓存（SQLite，@cached 装饰器）
     │   └── ratelimit.py   # 滑动窗口限流器
     ├── services/          # 业务逻辑
     │   ├── boards.py      # 榜单数据读取与公式计算

@@ -66,7 +66,7 @@ export function RankTable({
     return [...filtered].sort((a, b) => (acc(a) - acc(b)) * dir)
   }, [filtered, sortable, sortKey, sortDir])
 
-  const hasView = items.some((it) => (it.view ?? it.views ?? 0) > 0)
+  const hasView = items.some((it) => (it.view ?? 0) > 0)
 
   const { data: sparkData } = useQuery({
     queryKey: ["sparklines", boardType, issue],
@@ -183,7 +183,7 @@ export function RankTable({
               {sparkline && (
                 <td style={{ padding: "4px 8px", textAlign: "center" }}>
                   {sparkMap[it.bvid] ? (
-                    <Sparkline data={sparkMap[it.bvid]} />
+                    <Sparkline data={sparkMap[it.bvid] ?? []} />
                   ) : (
                     <span style={{ color: "var(--text-faint)", fontSize: 11 }}>—</span>
                   )}
@@ -217,8 +217,8 @@ export function Sparkline({ data }: { data: (number | null)[] }) {
     const y = pad + ((p.v - 1) / (maxR - 1)) * (H - pad * 2)
     return [x, y] as const
   })
-  const first = pts[0].v
-  const last = pts[n - 1].v
+  const first = pts[0]!.v
+  const last = pts[n - 1]!.v
   const improved = last < first
   const flat = last === first
   const color = flat
@@ -231,7 +231,7 @@ export function Sparkline({ data }: { data: (number | null)[] }) {
   const d = coords
     .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`)
     .join(" ")
-  const [ex, ey] = coords[coords.length - 1]
+  const [ex, ey] = coords[coords.length - 1]!
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block", margin: "0 auto" }}>
       <path d={d} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />

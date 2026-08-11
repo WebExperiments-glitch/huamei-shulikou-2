@@ -127,3 +127,19 @@ def score_breakdown(
         return songs_svc.score_breakdown(conn, bvid, board_type=board)
     finally:
         conn.close()
+
+
+@router.get("/{bvid}/formula-compare")
+def formula_compare(
+    bvid: str = Path(..., pattern="^BV[0-9A-Za-z]+$"),
+    board: str = Query("weekly", description="weekly|legend|annual 对比所用榜单"),
+):
+    """单曲在新/旧两代公式下的得分对比（公式可视化实验室）。"""
+    conn = db.connect_source()
+    try:
+        song = songs_svc.get_song(conn, bvid)
+        if not song:
+            raise HTTPException(404, "未找到该歌曲")
+        return songs_svc.formula_compare(conn, bvid, board_type=board)
+    finally:
+        conn.close()

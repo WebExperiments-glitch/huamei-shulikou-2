@@ -179,9 +179,9 @@ export default function AnnualReview() {
             <div className="stat">
               <div className="k"><Trophy size={13} /> 年度冠军</div>
               <div className="v" style={{ fontSize: 15, lineHeight: 1.3 }}>
-                {(stats.champion.title_cn || stats.champion.title)}
+                {(stats.champion?.title_cn || stats.champion?.title)}
               </div>
-              <div className="k" style={{ marginTop: 4 }}>得分 {fmtWan(stats.champion.score)}</div>
+              <div className="k" style={{ marginTop: 4 }}>得分 {fmtWan(stats.champion?.score ?? 0)}</div>
             </div>
             <div className="stat">
               <div className="k"><Flame size={13} /> 入榜曲目</div>
@@ -242,7 +242,7 @@ export default function AnnualReview() {
               <div className="muted" style={{ lineHeight: 1.9 }}>
                 本年度共 <b>{fmtInt(stats.count)}</b> 首作品登榜，其中
                 <b> {stats.legendCount} </b>首跨过传说/神话门槛。年度冠军
-                <b> {stats.champion.title_cn || stats.champion.title} </b>
+                <b> {stats.champion?.title_cn || stats.champion?.title} </b>
                 以 <b>{fmtWan(stats.maxScore)}</b> 得分领跑；入榜曲目平均在榜
                 <b> {stats.avgWeeks.toFixed(1)} </b>周，说明头部生态兼具爆发力与长尾生命力。
               </div>

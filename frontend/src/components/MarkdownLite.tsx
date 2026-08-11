@@ -38,7 +38,7 @@ export function MarkdownLite({ text }: { text: string }) {
   let key = 0
 
   while (i < lines.length) {
-    const line = lines[i]
+    const line = lines[i]!
     if (!line.trim()) {
       i++
       continue
@@ -46,21 +46,21 @@ export function MarkdownLite({ text }: { text: string }) {
     // 标题
     const h = /^(#{1,3})\s+(.*)$/.exec(line)
     if (h) {
-      const level = h[1].length
+      const level = h[1]!.length
       const cls = level === 1 ? "md-h1" : level === 2 ? "md-h2" : "md-h3"
       blocks.push(
         <div key={key++} className={cls}>
-          {renderInline(h[2])}
+          {renderInline(h[2]!)}
         </div>,
       )
       i++
       continue
     }
     // Markdown 表格（连续 | 行，第 2 行为 --- 分隔线）
-    if (isPipeRow(line) && i + 1 < lines.length && /^\s*\|[\s:\-|]+\|\s*$/.test(lines[i + 1])) {
+    if (isPipeRow(line) && i + 1 < lines.length && /^\s*\|[\s:\-|]+\|\s*$/.test(lines[i + 1]!)) {
       const rows: string[] = []
-      while (i < lines.length && isPipeRow(lines[i])) {
-        rows.push(lines[i])
+      while (i < lines.length && isPipeRow(lines[i]!)) {
+        rows.push(lines[i]!)
         i++
       }
       const parsed = parseTableRows(rows.slice(0, 2)).concat(parseTableRows(rows.slice(2)))
@@ -96,8 +96,8 @@ export function MarkdownLite({ text }: { text: string }) {
     // 无序列表
     if (/^[-*]\s+/.test(line)) {
       const items: string[] = []
-      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*]\s+/, ""))
+      while (i < lines.length && /^[-*]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^[-*]\s+/, ""))
         i++
       }
       blocks.push(
@@ -112,8 +112,8 @@ export function MarkdownLite({ text }: { text: string }) {
     // 有序列表
     if (/^\d+\.\s+/.test(line)) {
       const items: string[] = []
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+\.\s+/, ""))
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\d+\.\s+/, ""))
         i++
       }
       blocks.push(
@@ -129,11 +129,11 @@ export function MarkdownLite({ text }: { text: string }) {
     const para: string[] = []
     while (
       i < lines.length &&
-      lines[i].trim() &&
-      !/^(#{1,3}\s|[-*]\s|\d+\.\s)/.test(lines[i]) &&
-      !isPipeRow(lines[i])
+      lines[i]!.trim() &&
+      !/^(#{1,3}\s|[-*]\s|\d+\.\s)/.test(lines[i]!) &&
+      !isPipeRow(lines[i]!)
     ) {
-      para.push(lines[i])
+      para.push(lines[i]!)
       i++
     }
     blocks.push(

@@ -95,6 +95,7 @@ t = log10(e^(Δt / 86400 / 14) + 1) + 1  （新曲时间衰减）
 |---|---|
 | `biliboard (11).db` | 官方数据源（只读，含 112 张 official_YYYYMMDD 表） |
 | `hot.sqlite` | 实时热度缓存 + 快照 |
+| `cache.sqlite` | 通用持久化缓存（TTL，重启不丢） |
 | `daily.sqlite` | 日榜数据 |
 | `monthly.sqlite` | 月榜数据 |
 | `agent.sqlite` | AI 智能体会话持久化 |

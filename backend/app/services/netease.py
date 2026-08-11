@@ -22,6 +22,23 @@ from app.vendor.weencrypt import weapi_encrypt
 
 logger = logging.getLogger("netease")
 
+# robots.txt 透明校验：music.163.com 对 /weapi 为 Allow（仅禁 /prime/m/gift-receive 与训练爬虫）。
+# 首次调用时记录一次策略，确保合规可见、可审计。
+from app.core import robots as robots_mod  # noqa: E402
+
+_ROBOTS_LOGGED = False
+
+
+def _log_robots_once() -> None:
+    global _ROBOTS_LOGGED
+    if _ROBOTS_LOGGED:
+        return
+    _ROBOTS_LOGGED = True
+    try:
+        logger.info("robots: music.163.com=%s", robots_mod.summary("music.163.com"))
+    except Exception:  # noqa: BLE001
+        pass
+
 # 固定为常见电脑 Chrome 浏览器的 headers，避免被网易云风控拦截
 _WEAPI_HEADERS = {
     "User-Agent": (
@@ -61,6 +78,7 @@ def search(keyword: str, stype: str = "song", limit: int = 20, offset: int = 0) 
     - album  : 专辑
     - playlist: 歌单
     """
+    _log_robots_once()
     t = _TYPE_MAP.get(stype, 1)
     resp = _weapi_post(
         f"{_BASE}/weapi/search/get",

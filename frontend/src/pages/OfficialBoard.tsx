@@ -88,6 +88,8 @@ export default function OfficialBoard() {
   })
 
   const issues = issuesQ.data?.issues ?? []
+  const currentIssue = issues.find(i => i.issue === effectiveIssue)
+  const formulaVersion = currentIssue?.formula_version ?? "new"
 
   return (
     <>
@@ -133,6 +135,17 @@ export default function OfficialBoard() {
               onChange={setIssue}
             />
           </div>
+          {type === "weekly" && (
+            <div className="formula-note" style={{ marginBottom: 12 }}>
+              <span className={`formula-dot ${formulaVersion === "old" ? "formula-old" : "formula-new"}`} />
+              <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
+                {formulaVersion === "old"
+                  ? "本期使用旧公式：得分 = Δ播放×t×2 + Δ收藏×30 + Δ点赞×3 + Δ投币×10"
+                  : "本期使用新公式：得分 = Δ播放×t + Δ收藏×15 + Δ点赞×3 + Δ投币×30"}
+                {" · "}第 54 期为分界（2025-06-17 起）
+              </span>
+            </div>
+          )}
           {rankQ.isLoading ? (
             <div className="card" style={{ padding: 20 }}><SkeletonTable rows={20} /></div>
           ) : rankQ.error ? (
@@ -141,6 +154,9 @@ export default function OfficialBoard() {
             <div className="card" style={{ overflowX: "auto" }}>
               <div className="card-title">
                 {effectiveIssue} 期
+                <span className={`badge formula-badge ${formulaVersion === "old" ? "formula-old" : "formula-new"}`}>
+                  {formulaVersion === "old" ? "旧公式" : "新公式"}
+                </span>
                 <span className="badge">{rankQ.data?.items.length ?? 0} 首</span>
               </div>
               <RankTable

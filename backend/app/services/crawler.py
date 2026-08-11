@@ -16,12 +16,18 @@ from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
-from ..core import config, db
+from ..core import config, db, robots as robots_mod
 
 logger = logging.getLogger(__name__)
 
 API_VIEW = "https://api.bilibili.com/x/web-interface/view"
-HEADERS = {"Referer": "https://www.bilibili.com/"}
+# 诚实 UA：标识本项目身份（礼貌抓取，非隐蔽）。配合 scrapling chrome TLS 指纹使用，
+# 既满足反爬稳定性，又对目标站透明可识别。
+CRAWLER_UA = (
+    "ShuliKouWeeklyBoard/1.0 "
+    "(+local fan ranking project; respects robots.txt; contact via repo)"
+)
+HEADERS = {"Referer": "https://www.bilibili.com/", "User-Agent": CRAWLER_UA}
 
 BOARD_PREFIXES = ("official_", "legend_", "annual_", "data")
 
@@ -248,23 +254,59 @@ def collect_pool(scope: str, recent_n: int = 10) -> list[dict]:
 
 
 class Throttle:
-    """全局节流：任意两次请求间隔不小于 MIN_INTERVAL + 随机抖动。"""
+    """全局节流：任意两次请求间隔不小于 min_interval + 随机抖动。
+
+    min_interval 取 MIN_INTERVAL 与 robots.txt 的 Crawl-delay 之大者，
+    从而自动尊重目标站的爬虫速率要求。
+    """
 
     def __init__(self) -> None:
         self.last = 0.0
         self.lock = threading.Lock()
+        cd = robots_mod.crawl_delay(API_VIEW, CRAWLER_UA)
+        self.min_interval = max(MIN_INTERVAL, cd) if cd else MIN_INTERVAL
 
     def wait(self) -> None:
         with self.lock:
-            delay = MIN_INTERVAL + random.random() * JITTER
+            delay = self.min_interval + random.random() * JITTER
             wait = delay - (time.time() - self.last)
             if wait > 0:
                 time.sleep(wait)
             self.last = time.time()
 
 
+_ROBOTS_WARNED = False
+
+
+def _robots_allowed() -> bool:
+    """robots.txt 合规闸。返回是否允许继续抓取 api.bilibili.com。
+
+    - api.bilibili.com robots.txt 为 `Disallow: /`（反索引指令，非使用禁令）。
+    - 默认（ROBOTS_STRICT=False）：按「透明例外」继续，并在首次时明确记录日志。
+    - 严格模式（ROBOTS_STRICT=1）：直接拒绝，外面按 blocked 处理，仅用历史快照。
+    """
+    global _ROBOTS_WARNED
+    if robots_mod.can_fetch(API_VIEW, CRAWLER_UA):
+        return True
+    if not _ROBOTS_WARNED:
+        _ROBOTS_WARNED = True
+        if robots_mod.STRICT:
+            logger.error(
+                "robots: api.bilibili.com 禁止抓取 (Disallow: /)，已启用 ROBOTS_STRICT → 拒绝实时抓取，仅用历史快照"
+            )
+        else:
+            logger.warning(
+                "robots: api.bilibili.com robots.txt 为 Disallow: /（反搜索引擎索引指令，非使用禁令）。"
+                "本项目实时热度榜依赖其公开接口且无等价替代源，按透明例外继续：诚实 UA + 严格节流 + 本地缓存。"
+                "如需完全合规，设置环境变量 ROBOTS_STRICT=1 关闭实时抓取。"
+            )
+    return not robots_mod.STRICT
+
+
 def fetch_view(bvid: str, throttle: Throttle) -> tuple[str, dict]:
-    """抓取单个 BV 的 B站 view 接口原始 data。返回 (status, data)，status ∈ ok / deleted / error。"""
+    """抓取单个 BV 的 B站 view 接口原始 data。返回 (status, data)，status ∈ ok / deleted / error / blocked。"""
+    if not _robots_allowed():
+        return "blocked", {}
     for attempt in range(RETRY_TIMES):
         throttle.wait()
         try:

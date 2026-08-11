@@ -17,6 +17,9 @@ const HotBoard = lazy(() => import("./pages/HotBoard"))
 const Compare = lazy(() => import("./pages/Compare"))
 const Analytics = lazy(() => import("./pages/Analytics"))
 const Formula = lazy(() => import("./pages/Formula"))
+const FormulaLab = lazy(() => import("./pages/FormulaLab"))
+const ExportCenter = lazy(() => import("./pages/Export"))
+const Predict = lazy(() => import("./pages/Predict"))
 const Netease = lazy(() => import("./pages/Netease"))
 const NeteaseDetail = lazy(() => import("./pages/NeteaseDetail"))
 const Favorites = lazy(() => import("./pages/Favorites"))
@@ -55,6 +58,9 @@ export default function App() {
             <Route path="compare" element={withSuspense(<Compare />)} />
             <Route path="analytics" element={withSuspense(<Analytics />)} />
             <Route path="formula" element={withSuspense(<Formula />)} />
+            <Route path="formula-lab" element={withSuspense(<FormulaLab />)} />
+            <Route path="export" element={withSuspense(<ExportCenter />)} />
+            <Route path="predict" element={withSuspense(<Predict />)} />
             <Route path="favorites" element={withSuspense(<Favorites />)} />
             <Route path="netease" element={<NeteasePlayerProvider><Outlet /></NeteasePlayerProvider>}>
               <Route index element={withSuspense(<Netease />)} />

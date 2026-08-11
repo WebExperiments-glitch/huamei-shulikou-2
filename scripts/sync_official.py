@@ -12,12 +12,21 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
+# 让脚本能复用后端统一的 robots.txt 合规层（biliboard.uk 为允许，仅作透明校验/日志）。
+sys.path.insert(0, str(ROOT / "backend"))
+from app.core import robots as robots_mod  # noqa: E402
+
+SYNC_UA = (
+    "ShuliKouWeeklyBoard-Sync/1.0 "
+    "(+local fan ranking project; respects robots.txt)"
+)
 SOURCE_DB = Path(r"D:\DeepSeek前端代码\前端\未确定\术力口周榜\biliboard-database\表格写入sqlite\biliboard (11).db")
 
 BOARD_IDS = {"weekly": 1, "legend": 2, "annual": 3}
@@ -216,9 +225,12 @@ def run_pipeline(types: list[str] | tuple[str, ...] = ("weekly", "legend", "annu
 
     summary: dict = {"boards": {}, "songs": None, "monthly_built": False,
                      "checked": [], "all_up_to_date": False}
+    # robots.txt 透明校验：biliboard.uk 对 /api/public 为 Allow，确认无违规后再同步。
+    rb = robots_mod.summary("biliboard.uk")
+    print(f"[robots] biliboard.uk: {rb.get('allows_root') and 'Allow / (合规)' or rb}")
     conn = sqlite3.connect(SOURCE_DB)
     try:
-        with httpx.Client() as client:
+        with httpx.Client(headers={"User-Agent": SYNC_UA}) as client:
             for bt in types:
                 summary["boards"][bt] = sync_one(client, conn, bt)
                 summary["checked"].append(bt)

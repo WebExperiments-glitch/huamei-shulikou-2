@@ -421,9 +421,9 @@ function HistoryCard({ type, rows }: { type: string; rows: RankEntry[] }) {
               <td className="num">{r.issue}</td>
               <td className="rank-no" style={{ color: r.rank <= 3 ? "var(--gold)" : undefined }}>{r.rank}</td>
               <td className="score-cell">{fmt(r.score)}</td>
-              <td className="num">{fmt(r.favorite ?? r.favorites)}</td>
-              <td className="num">{fmt(r.coin ?? r.coins)}</td>
-              <td className="num">{fmt(r.like ?? r.likes)}</td>
+              <td className="num">{fmt(r.favorite)}</td>
+              <td className="num">{fmt(r.coin)}</td>
+              <td className="num">{fmt(r.like)}</td>
               <td style={{ textAlign: "right" }}><Rate rate={r.rate} /></td>
               <td className="num" style={{ textAlign: "right" }}>{r.weeks_on_board ?? "—"}</td>
             </tr>

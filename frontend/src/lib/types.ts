@@ -29,6 +29,8 @@ export interface IssueInfo {
   date: string
   entries: number
   is_annual?: number
+  /** 该期所用公式代：old(<54) / new(≥54)，由后端 issues 接口返回 */
+  formula_version?: "old" | "new" | null
 }
 
 export interface RankEntry {
@@ -99,6 +101,43 @@ export interface ArtistStat {
   best_view?: number | null
   best_bvid?: string | null
   best_title?: string | null
+  /** 旗下歌曲在官方榜累计上榜期数（跨周榜/传说榜/年榜） */
+  board_count?: number | null
+  /** 旗下歌曲的历史最高排名（最小 rank） */
+  best_rank?: number | null
+  /** 综合战力分（透明加权：总播放百万计×1 + 上榜期数×3 + 传说曲×200 + 神话曲×1000） */
+  power?: number | null
+}
+
+export interface FormulaCompareFactor {
+  comp_view: number | null
+  comp_favorite: number | null
+  comp_like: number | null
+  comp_coin: number | null
+  view_implied: boolean
+  total: number
+}
+
+export interface FormulaCompareEntry {
+  issue: string
+  rank: number | null
+  official_score: number | null
+  view: number | null
+  favorite: number | null
+  coin: number | null
+  like: number | null
+  pubtime: number | null
+  official_version: "old" | "new"
+  t_new: number
+  t_old: number
+  old: FormulaCompareFactor
+  new: FormulaCompareFactor
+}
+
+export interface FormulaCompare {
+  bvid: string
+  board_type: string
+  entries: FormulaCompareEntry[]
 }
 
 export interface SuggestItem {
@@ -455,4 +494,86 @@ export interface NeteaseLyric {
   raw_tlyric?: string
   lines?: NeteaseLyricLine[]
   has_translation?: boolean
+}
+
+/* ---------------- 下期冲榜预测（backend services/predict.py） ---------------- */
+
+/** 历史某期的入榜线（末位得分） */
+export interface CutlineEntry {
+  issue: string
+  date: string
+  entries: number
+  cut: number
+  top: number
+}
+
+export interface CutlineStat {
+  history: CutlineEntry[]
+  median: number | null
+  mean: number | null
+  min: number | null
+  max: number | null
+  board_size: number
+  lookback: number
+}
+
+/** 单曲预测条目 */
+export interface PredictItem {
+  bvid: string
+  title: string
+  title_cn?: string | null
+  owner?: string | null
+  pubtime: number
+  age_days: number
+  view: number
+  favorite: number
+  coin: number
+  like: number
+  /** 观测窗口内的实际增量 */
+  dv: number
+  df: number
+  dc: number
+  dl: number
+  rate_view: number
+  decay: number
+  /** 外推 7 日的预测增量 */
+  p7v: number
+  p7f: number
+  p7c: number
+  p7l: number
+  t: number
+  pred_score: number
+  pred_rank: number
+  prob: number
+  margin: number | null
+  margin_pct: number | null
+  on_last_board: boolean
+  last_rank?: number | null
+}
+
+export interface PredictSummary {
+  generated_at: number
+  period_start: number
+  window_days: number
+  baseline_snapshot: { id: number; created_at: number }
+  latest_snapshot: { id: number; created_at: number }
+  tracked: number
+  board_size: number
+  cut_median: number
+  cut_min: number | null
+  cut_max: number | null
+  expected_in: number
+  newcomers_in_top: number
+  decay_k: number
+  formula: string
+  low_confidence: boolean
+}
+
+export interface PredictResult {
+  ok: boolean
+  reason: string | null
+  cutline: CutlineStat
+  summary: PredictSummary | null
+  total?: number
+  items: PredictItem[]
 }

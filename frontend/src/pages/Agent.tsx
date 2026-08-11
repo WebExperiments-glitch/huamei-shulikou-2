@@ -4,7 +4,7 @@ import { Bot, Send, Wrench, Loader2, AlertTriangle, Check, MessageSquarePlus, Tr
 import { api } from "../lib/api"
 import { useFavorites } from "../lib/favorites"
 import { useConversations } from "../lib/conversations"
-import type { AIMessage, ToolCall, SourceItem } from "../lib/conversations"
+import type { AIMessage, ToolCall, SourceItem, ChartSpec } from "../lib/conversations"
 import { Markdown } from "../lib/markdown"
 import { ChartCard } from "./Agent/ChartCard"
 
@@ -298,7 +298,7 @@ export default function Agent() {
         })
       }
     } else if (t === "chart") {
-      const spec = { id: ev.id as string, title: ev.title as string, option: ev.option }
+      const spec = { id: ev.id as string, title: ev.title as string, option: ev.option } as ChartSpec
       patchAssistant((m) => ({ ...m, charts: [...(m.charts || []), spec] }))
     } else if (t === "done") {
       // 结束由 finally 处理

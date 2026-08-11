@@ -8,7 +8,7 @@ import { Empty, Spinner, fmt } from "../components/ui"
 
 const PAGE_SIZE = 50
 
-type SortKey = "songs" | "total_view" | "legend" | "myth"
+type SortKey = "songs" | "total_view" | "legend" | "myth" | "board_count" | "best_rank" | "power"
 
 function SortHead({ k, label, active, order, onSort }: {
   k: SortKey
@@ -66,8 +66,9 @@ export function ArtistBoard({
     const ql = q.trim().toLowerCase()
     const base = ql ? items.filter((it) => it.name.toLowerCase().includes(ql)) : items
     return [...base].sort((a, b) => {
-      const av = a[sort] ?? 0
-      const bv = b[sort] ?? 0
+      // 最高排名越小越好，排序时取负使「第 1 名」恒排最前
+      const av = sort === "best_rank" ? -(a[sort] ?? 1e9) : (a[sort] ?? 0)
+      const bv = sort === "best_rank" ? -(b[sort] ?? 1e9) : (b[sort] ?? 0)
       return order === "desc" ? bv - av : av - bv
     })
   }, [items, q, sort, order])
@@ -141,6 +142,9 @@ export function ArtistBoard({
                   <SortHead k="total_view" label="总播放*" active={sort === "total_view"} order={order} onSort={toggleSort} />
                   <SortHead k="legend" label="传说曲" active={sort === "legend"} order={order} onSort={toggleSort} />
                   <SortHead k="myth" label="神话曲" active={sort === "myth"} order={order} onSort={toggleSort} />
+                  <SortHead k="board_count" label="上榜次数" active={sort === "board_count"} order={order} onSort={toggleSort} />
+                  <SortHead k="best_rank" label="最高排名" active={sort === "best_rank"} order={order} onSort={toggleSort} />
+                  <SortHead k="power" label="战力" active={sort === "power"} order={order} onSort={toggleSort} />
                   <th>代表曲（最高播放）</th>
                   <th>百科</th>
                 </tr>
@@ -163,6 +167,15 @@ export function ArtistBoard({
                     </td>
                     <td className="num-r">
                       {it.myth ? <span className="tag-mini tag-myth">{it.myth}</span> : <span className="text-faint">—</span>}
+                    </td>
+                    <td className="num-r">
+                      {it.board_count != null ? <span className="num">{it.board_count.toLocaleString()} 期</span> : <span className="text-faint">—</span>}
+                    </td>
+                    <td className="num-r">
+                      {it.best_rank != null ? <span className="rank-badge">第 {it.best_rank}</span> : <span className="text-faint">—</span>}
+                    </td>
+                    <td className="num-r">
+                      {it.power != null ? <span className="tag-mini tag-power">{it.power.toLocaleString()}</span> : <span className="text-faint">—</span>}
                     </td>
                     <td className="num">
                       {it.best_bvid ? (
@@ -205,7 +218,9 @@ export function ArtistBoard({
         )}
 
         <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text-faint)" }}>
-          * 总播放为「有播放指标的歌曲」合计（收录池 12,381 首中约 2,342 首含指标，未含指标的歌曲不计入）。
+          * 总播放为「有播放指标的歌曲」合计（收录池 12,381 首中部分含指标，未含指标的歌曲不计入）。
+          <br />
+          战力分 = 总播放(百万计)×1 + 上榜期数×3 + 传说曲×200 + 神话曲×1000（透明加权，综合衡量持续产出与爆款能力）。
         </div>
       </div>
     </>

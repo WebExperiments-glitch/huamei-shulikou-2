@@ -57,7 +57,7 @@ function songRows(items: Song[]) {
     it.favorite ?? "",
     it.coin ?? "",
     it.like ?? "",
-    it.tier ? TIER_META[it.tier].label : "",
+    it.tier ? (TIER_META[it.tier]?.label ?? "") : "",
     it.weeks_on_board ?? "",
     it.best_rank ?? "",
   ])

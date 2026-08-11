@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import type { RankEntry } from "../lib/types"
+import { escapeCsvCell } from "../lib/csv"
 
 export function Spinner({ label = "加载中…", size = 16 }: { label?: string | null; size?: number }) {
   return (
@@ -107,14 +108,13 @@ export function downloadBlob(filename: string, content: string, mime: string) {
   URL.revokeObjectURL(url)
 }
 
-/** 将二维数据导出为 CSV（带 BOM，Excel 中文不乱码） */
+/**
+ * 将二维数据导出为 CSV（带 BOM，Excel 中文不乱码）。
+ * 转义与防注入逻辑统一收敛到 lib/csv，避免多处实现漂移。
+ */
 export function downloadCSV(headers: string[], rows: (string | number)[][], filename: string) {
-  const esc = (v: string | number) => {
-    const s = String(v ?? "")
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const csv = [headers, ...rows].map((r) => r.map(esc).join(",")).join("\n")
-  downloadBlob(filename + ".csv", "﻿" + csv, "text/csv;charset=utf-8")
+  const csv = [headers, ...rows].map((r) => r.map(escapeCsvCell).join(",")).join("\r\n")
+  downloadBlob(filename + ".csv", "\uFEFF" + csv, "text/csv;charset=utf-8")
 }
 
 export function downloadJSON(data: unknown, filename: string) {

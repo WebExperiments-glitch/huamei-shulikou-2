@@ -195,7 +195,7 @@ function uid(): string {
 
 const initial = load()
 const initialActive = initial.length
-  ? [...initial].sort((a, b) => b.updatedAt - a.updatedAt)[0].id
+  ? [...initial].sort((a, b) => b.updatedAt - a.updatedAt)[0]!.id
   : null
 
 interface ConvStore {

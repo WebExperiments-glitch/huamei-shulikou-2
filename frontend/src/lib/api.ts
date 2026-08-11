@@ -185,6 +185,8 @@ export const api = {
   },
   scoreBreakdown: (bvid: string, board = "weekly") =>
     request<ScoreBreakdown>(`/api/songs/${bvid}/score-breakdown?board=${board}`),
+  formulaCompare: (bvid: string, board = "weekly") =>
+    request<FormulaCompare>(`/api/songs/${bvid}/formula-compare?board=${board}`),
   artists: (limit = 5000) =>
     request<{ kind: string; total: number; items: ArtistStat[] }>(`/api/stats/artists?limit=${limit}`),
   vocalists: (limit = 5000) =>
@@ -212,6 +214,13 @@ export const api = {
     request<MomentumResponse>(
       `/api/hot/momentum?metric=${metric}&limit=${limit}&offset=${offset}`,
     ),
+  // ---- 下期冲榜预测（backend api/predict.py） ----
+  predictNextWeek: (baseline = "auto", decay = 1.0, limit = 60, board = "weekly") =>
+    request<PredictResult>(
+      `/api/predict/next-week?baseline=${encodeURIComponent(baseline)}&decay=${decay}&limit=${limit}&board=${board}`,
+    ),
+  predictCutlines: (board = "weekly", lookback = 12) =>
+    request<CutlineStat>(`/api/predict/cutlines?board=${board}&lookback=${lookback}`),
   hotSnapshots: (limit = 100) =>
     request<{ items: Snapshot[] }>(`/api/hot/snapshots?limit=${limit}`),
   thinkSearch: (q: string) =>
@@ -331,9 +340,12 @@ import type {
   NeteaseAlbumDetail,
   NeteasePlaylistDetail,
   NeteaseLyric,
+  PredictResult,
+  CutlineStat,
   RankEntry,
   ReentryTrack,
   ScoreBreakdown,
+  FormulaCompare,
   Snapshot,
   Song,
   SongFacets,

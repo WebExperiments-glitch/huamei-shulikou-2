@@ -45,7 +45,7 @@ src/
 │   ├── markdown.tsx       # 零依赖 Markdown 渲染组件
 │   ├── neteasePlayer.tsx  # 网易云播放器（Context + audio）
 │   └── bvid.ts            # BV 号工具函数
-├── pages/             # 页面组件（16 个路由页面）
+├── pages/             # 页面组件（20+ 个路由页面）
 │   ├── Dashboard.tsx           # 总览
 │   ├── OfficialBoard.tsx       # 周榜/传说曲榜/年榜
 │   ├── MonthlyBoard.tsx        # 月榜
@@ -94,6 +94,9 @@ src/
 | `/agent` | AI 智能体 |
 | `/netease` | 网易云搜索 |
 | `/netease/:kind/:id` | 网易云详情 |
+| `/predict` | 下期冲榜预测（A） |
+| `/export` | 数据导出中心（B） |
+| `/formula-lab` | 公式可视化实验室（D） |
 
 ## 类型
 

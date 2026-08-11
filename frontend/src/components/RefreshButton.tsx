@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { RefreshCw, Loader2, CheckCircle2, XCircle, X } from "lucide-react"
 import { api } from "../lib/api"
 
@@ -85,8 +86,9 @@ export default function RefreshButton() {
         <span>{running ? "同步中…" : "刷新数据"}</span>
       </button>
 
-      {open && (
-        <div className="sync-panel">
+      {open &&
+        createPortal(
+          <div className="sync-panel">
           <div className="sync-head">
             <span>数据同步 · biliboard.uk</span>
             <button className="sync-x" onClick={() => setOpen(false)} aria-label="关闭">
@@ -169,7 +171,7 @@ export default function RefreshButton() {
             )}
           </div>
         </div>
-      )}
+      , document.body)}
     </>
   )
 }

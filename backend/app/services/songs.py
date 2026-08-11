@@ -4,6 +4,7 @@ import re
 import sqlite3
 
 from ..core import db
+from ..core import cache as cache_mod
 from . import rank as rank_svc
 
 BOARD_TABLES = {
@@ -19,8 +20,12 @@ TIER_THRESHOLDS = [
     ("hall", 100_000),       # 殿堂曲：十万播放
 ]
 
-# 模块级缓存：源库为只读，进程内只构建一次，避免每次请求重扫 100+ 表
-_CACHE: dict = {"board_stats": None, "metrics": None}
+# 模块级缓存：源库为只读，重扫 100+ 表较贵。
+# 改用进程级持久化 SQL 缓存（app.core.cache），按 TTL 自动失效、重启不丢，
+# 不再需要「改完后端手动重启」来刷新指标。
+_METRICS_TTL = 1800    # 30 分钟
+_BOARD_STATS_TTL = 1800
+_NAMES_TTL = 3600      # 1 小时
 
 # B 站 BV 号：固定 BV + 10 位 Base58 字符（大小写敏感，匹配时统一 LOWER）
 _BV_RE = re.compile(r"BV[0-9A-Za-z]{10}", re.I)
@@ -127,19 +132,42 @@ def _build_metrics(conn: sqlite3.Connection) -> dict[str, dict]:
             for r in rows:
                 update(r["bvid"], r["views"], r["favorites"], r["coins"], r["likes"], 0, r["score"])
 
+    # 3) hot.sqlite 实时缓存（backfill_metrics.py 补抓的全池实时指标）。
+    #    hot_cache 中 status='ok' 的歌曲以「实时最新值」并入，补齐无历史快照的覆盖缺口。
+    from . import crawler  # 延迟导入避免循环依赖
+
+    try:
+        hot = crawler.connect_hot(readonly=True)
+        try:
+            rows = hot.execute(
+                "SELECT bvid, view, favorite, coin, like, share FROM hot_cache WHERE status='ok'"
+            ).fetchall()
+        finally:
+            hot.close()
+        for r in rows:
+            update(r["bvid"], r["view"], r["favorite"], r["coin"], r["like"], r["share"])
+    except Exception:
+        pass  # hot 库不可用/未初始化时静默跳过，不影响历史指标
+
     return metrics
 
 
 def _get_board_stats(conn: sqlite3.Connection) -> dict:
-    if _CACHE["board_stats"] is None:
-        _CACHE["board_stats"] = _board_stats(conn)
-    return _CACHE["board_stats"]
+    hit, v = cache_mod.cache_get_json("songs:board_stats")
+    if hit:
+        return v
+    s = _board_stats(conn)
+    cache_mod.cache_put_json("songs:board_stats", s, ttl=_BOARD_STATS_TTL)
+    return s
 
 
 def _get_metrics(conn: sqlite3.Connection) -> dict:
-    if _CACHE["metrics"] is None:
-        _CACHE["metrics"] = _build_metrics(conn)
-    return _CACHE["metrics"]
+    hit, v = cache_mod.cache_get_json("songs:metrics")
+    if hit:
+        return v
+    m = _build_metrics(conn)
+    cache_mod.cache_put_json("songs:metrics", m, ttl=_METRICS_TTL)
+    return m
 
 
 def _to_item(r, stats: dict, metrics: dict) -> dict:
@@ -331,12 +359,10 @@ def suggest(conn, q: str, limit: int = 8) -> list[dict]:
     ]
 
 
-_NAMES_CACHE: dict[str, list[tuple[str, int]]] = {}
-
-
 def _get_names(conn, role: str) -> list[tuple[str, int]]:
-    if role in _NAMES_CACHE:
-        return _NAMES_CACHE[role]
+    hit, v = cache_mod.cache_get_json(f"songs:names:{role}")
+    if hit:
+        return v
     names: dict[str, int] = {}
     for r in conn.execute(f"SELECT {role} FROM songs_all").fetchall():
         for p in db.parse_json_list(r[role]):
@@ -344,7 +370,7 @@ def _get_names(conn, role: str) -> list[tuple[str, int]]:
             if name:
                 names[name] = names.get(name, 0) + 1
     out = sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))
-    _NAMES_CACHE[role] = out
+    cache_mod.cache_put_json(f"songs:names:{role}", out, ttl=_NAMES_TTL)
     return out
 
 
@@ -390,9 +416,12 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
     if board_type not in ("weekly", "legend", "annual"):
         board_type = "weekly"
 
-    # 该榜全部期次（升序），用于确定「第几期」以判断是否旧公式（<54）
+    # 该榜全部期次（升序）。官方期号以表内 issue_id 为准（weekly 从 2 起，
+    # 与升序位置相差 1，不可用位置号判断公式版本）；legend/annual 无 issue_id，一律新公式。
     issues = sorted(boards_svc.list_issues(conn, board_type), key=lambda x: x["issue"])
-    issue_index: dict[str, int] = {iss["issue"]: i + 1 for i, iss in enumerate(issues)}
+    issue_index: dict[str, int] = {
+        iss["issue"]: iss.get("issue_id") or 0 for iss in issues
+    }
 
     history = boards_svc.get_song_history(conn, board_type, bvid)
     if not history:
@@ -505,6 +534,106 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
     }
 
 
+def formula_compare(conn, bvid: str, board_type: str = "weekly") -> dict:
+    """单曲在新/旧两代公式下的得分因子对比（公式可视化实验室）。
+
+    对每期上榜记录，分别用 OLD_WEIGHTS 与 DEFAULT_WEIGHTS（含各自时间修正 t）
+    计算各因子贡献与合计，直观展示「同一首歌换公式后分数如何变化」。
+    view 缺失时由「官方分 − 其余三因子」反推（与 score_breakdown 同口径）。
+    """
+    from ..services import boards as boards_svc
+    from datetime import datetime
+
+    if board_type not in ("weekly", "legend", "annual"):
+        board_type = "weekly"
+
+    issues = sorted(boards_svc.list_issues(conn, board_type), key=lambda x: x["issue"])
+    issue_index = {iss["issue"]: iss.get("issue_id") or 0 for iss in issues}
+
+    history = boards_svc.get_song_history(conn, board_type, bvid)
+    if not history:
+        return {"bvid": bvid, "board_type": board_type, "entries": []}
+
+    def norm(r):
+        out = dict(r)
+        if "views" in out and "view" not in out:
+            out["view"] = out.get("views")
+        if "favorites" in out and "favorite" not in out:
+            out["favorite"] = out.get("favorites")
+        if "coins" in out and "coin" not in out:
+            out["coin"] = out.get("coins")
+        if "likes" in out and "like" not in out:
+            out["like"] = out.get("likes")
+        return out
+
+    def ts_of(issue_key):
+        try:
+            return int(datetime.strptime(issue_key, "%Y%m%d").timestamp())
+        except Exception:
+            return 0
+
+    song = get_song(conn, bvid)
+    pub = (song or {}).get("pubtime")
+
+    def factor_comp(w, view, fav, coin, like, t, official_score=None):
+        def safe(m, ww):
+            return int(m or 0) * ww if m is not None else None
+        comp_fav = safe(fav, w["favorite"]) if fav is not None else None
+        comp_like = safe(like, w["like"]) if like is not None else None
+        comp_coin = safe(coin, w["coin"]) if coin is not None else None
+        known = (comp_fav or 0) + (comp_like or 0) + (comp_coin or 0)
+        view_implied = False
+        if view is not None and view > 0:
+            comp_view = safe(view, w["view"] * t)
+        elif official_score is not None:
+            comp_view = round(official_score - known, 2)
+            view_implied = True
+        else:
+            comp_view = None
+        return {
+            "comp_view": round(comp_view, 2) if comp_view is not None else None,
+            "comp_favorite": round(comp_fav, 2) if comp_fav is not None else None,
+            "comp_like": round(comp_like, 2) if comp_like is not None else None,
+            "comp_coin": round(comp_coin, 2) if comp_coin is not None else None,
+            "view_implied": view_implied,
+        }
+
+    entries = []
+    prev_issue = None
+    for raw in history:
+        r = norm(raw)
+        issue = r.get("issue", "")
+        idx = issue_index.get(issue, 0)
+        is_old = board_type == "weekly" and idx > 0 and idx < rank_svc.NEW_FORMULA_FROM_ISSUE
+        official_version = "old" if is_old else "new"
+        cur_ts = ts_of(issue)
+        anchor_new = ts_of(prev_issue) if prev_issue else max(0, cur_ts - 7 * 86400)
+        anchor_old = cur_ts
+        t_new = rank_svc.time_correction(int(pub or 0), anchor_new) if pub else 1.0
+        t_old = rank_svc.time_correction_old(int(pub or 0), anchor_old) if pub else 2.47
+        view = r.get("view")
+        fav = r.get("favorite")
+        coin = r.get("coin")
+        like = r.get("like")
+        off = r.get("score")
+        old_c = factor_comp(rank_svc.OLD_WEIGHTS, view, fav, coin, like, t_old, off)
+        new_c = factor_comp(rank_svc.DEFAULT_WEIGHTS, view, fav, coin, like, t_new, off)
+        entries.append({
+            "issue": issue,
+            "rank": r.get("rank"),
+            "official_score": off,
+            "view": view, "favorite": fav, "coin": coin, "like": like,
+            "pubtime": pub,
+            "official_version": official_version,
+            "t_new": round(t_new, 4), "t_old": round(t_old, 4),
+            "old": {**old_c, "total": round((old_c["comp_view"] or 0) + (old_c["comp_favorite"] or 0) + (old_c["comp_like"] or 0) + (old_c["comp_coin"] or 0), 2)},
+            "new": {**new_c, "total": round((new_c["comp_view"] or 0) + (new_c["comp_favorite"] or 0) + (new_c["comp_like"] or 0) + (new_c["comp_coin"] or 0), 2)},
+        })
+        prev_issue = issue
+
+    return {"bvid": bvid, "board_type": board_type, "entries": entries}
+
+
 def get_song(conn, bvid: str) -> dict | None:
     # B站 bvid 大小写在不同源表不一致，查询时忽略大小写
     r = conn.execute(
@@ -548,20 +677,61 @@ def get_facets(conn) -> dict:
     }
 
 
+def _board_appearance(conn) -> dict:
+    """预计算每个 bvid 的上榜次数与最高排名（跨周榜/传说榜/年榜）。
+
+    返回 {bvid_upper: {"count": int, "best_rank": int|None}}。
+    count = 在官方榜出现的总期数（一首歌在周榜出现 N 期计 N 次）；
+    best_rank = 所有上榜记录中的最小 rank（即历史最高排名）。
+    """
+    info: dict[str, dict] = {}
+    for prefix in ("official_", "legend_", "annual_"):
+        tables = [
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
+                (f"{prefix}%",),
+            ).fetchall()
+            if r[0][len(prefix):].isdigit() and len(r[0][len(prefix):]) == 8
+        ]
+        for t in tables:
+            try:
+                rows = conn.execute(
+                    f'SELECT bvid, rank FROM "{t}" WHERE rank IS NOT NULL'
+                ).fetchall()
+            except Exception:
+                continue
+            for r in rows:
+                bv = (r["bvid"] or "").upper()
+                rk = r["rank"]
+                d = info.get(bv)
+                if d is None:
+                    d = info[bv] = {"count": 0, "best_rank": None}
+                d["count"] += 1
+                if rk is not None:
+                    if d["best_rank"] is None or rk < d["best_rank"]:
+                        d["best_rank"] = rk
+    return info
+
+
 def _aggregate_role(conn, role: str, url_keys: tuple[str, ...], min_songs: int = 1) -> list[dict]:
     """通用角色聚合（P主 / 歌姬）。
 
     对收录池每首歌的角色字段（producers / vocalists）展开，统计：
-      - songs      参与歌曲数（完整覆盖）
-      - total_view 可统计指标歌曲的播放量合计（仅来自 data*/legend/annual 有指标的歌曲）
-      - legend     旗下传说曲（百万）数量
-      - myth       旗下神话曲（千万）数量
-      - best_*     代表曲：可统计指标中播放最高的曲子（bvid/title/view）
+      - songs       参与歌曲数（完整覆盖）
+      - total_view  可统计指标歌曲的播放量合计
+      - legend      旗下传说曲（百万）数量
+      - myth        旗下神话曲（千万）数量
+      - best_*      代表曲：可统计指标中播放最高的曲子（bvid/title/view）
+      - board_count 旗下歌曲在官方榜累计上榜期数
+      - best_rank   旗下歌曲的历史最高排名（最小 rank）
+      - power       综合战力分（透明加权，公式见下方）
 
-    role: 'producers' | 'vocalists'
-    url_keys: 百科链接字段优先级，如 ('wiki_url','moegirl_url') 或 ('url','wiki_url')
+    战力分公式（前端「战力说明」公开，便于核验）：
+        power = 总播放(百万计) × 1 + 上榜期数 × 3 + 传说曲 × 200 + 神话曲 × 1000
+    各维度量级经平衡，使单一神话曲或百万级总播放都不至于碾压其它维度。
     """
     metrics = _build_metrics(conn)
+    board_info = _board_appearance(conn)
     # 保留 songs_all 原始大小写，避免 best_bvid 全大写导致下游链接 404
     bvid_map = {
         (r["bvid"] or "").upper(): r["bvid"]
@@ -576,6 +746,7 @@ def _aggregate_role(conn, role: str, url_keys: tuple[str, ...], min_songs: int =
     for r in rows:
         bvid = (r["bvid"] or "").upper()
         m = metrics.get(bvid)
+        bi = board_info.get(bvid)
         for p in db.parse_json_list(r[role]):
             name = (p.get("name") or "").strip() or "未知"
             url = None
@@ -589,6 +760,7 @@ def _aggregate_role(conn, role: str, url_keys: tuple[str, ...], min_songs: int =
                     "name": name, "url": url,
                     "songs": 0, "total_view": 0, "legend": 0, "myth": 0,
                     "best_view": -1, "best_bvid": None, "best_title": None,
+                    "board_count": 0, "best_rank": None,
                 }
             s["songs"] += 1
             if m:
@@ -602,6 +774,20 @@ def _aggregate_role(conn, role: str, url_keys: tuple[str, ...], min_songs: int =
                     s["best_view"] = m["view"]
                     s["best_bvid"] = bvid_map.get(bvid, bvid)
                     s["best_title"] = title_map.get(bvid)
+            if bi:
+                s["board_count"] += bi["count"]
+                if bi["best_rank"] is not None:
+                    if s["best_rank"] is None or bi["best_rank"] < s["best_rank"]:
+                        s["best_rank"] = bi["best_rank"]
+    # 计算综合战力分
+    for s in stats.values():
+        tv = s["total_view"] or 0
+        s["power"] = int(
+            (tv / 1_000_000) * 1
+            + (s["board_count"] or 0) * 3
+            + (s["legend"] or 0) * 200
+            + (s["myth"] or 0) * 1000
+        )
     out = [s for s in stats.values() if s["songs"] >= min_songs]
     out.sort(key=lambda x: (-x["songs"], -x["total_view"]))
     return out
