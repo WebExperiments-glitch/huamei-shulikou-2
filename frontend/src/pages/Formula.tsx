@@ -4,14 +4,16 @@ import { fmt } from "../components/ui"
 
 /**
  * 时间修正函数（与后端 services/rank.py 完全一致，可核验）。
- * 新公式：t = 1 (Δt<0) 或 log10(e^(Δt/86400/14)+1)+1
+ * 新公式：t = 1 (Δt<0) 或 log10(e^(Δt/86400/14)+1)+1，随后钳制到 [1.0, 2.615]
+ *   —— 上限 2.615 来自官方 112 期 implied_t 实测（中位 1.0、最大 2.615），消除脏数据导致的 t 失控放大。
  * 旧公式：t = 按「发行天数 D = floor((结束-投稿)/86400)」的阶梯系数
  */
 function timeCorrectionNew(pubtime: number, prevPeriodEnd: number): number {
   if (!pubtime) return 1.0
   const dt = pubtime - prevPeriodEnd
   if (dt < 0) return 1.0
-  return Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
+  const t = Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
+  return Math.min(Math.max(t, 1.0), 2.615)
 }
 
 function timeCorrectionOld(pubtime: number, periodEnd: number): number {
@@ -84,8 +86,9 @@ export default function Formula() {
           <div className="card-title">现行公式（第 54 期起，≥2025-06-24）</div>
           <div className="formula-box">
             <div className="formula-line">得分 = <span className="hl-view">Δ播放 × t</span> + <span className="hl-fav">15 × Δ收藏</span> + <span className="hl-like">3 × Δ点赞</span> + <span className="hl-coin">30 × Δ硬币</span></div>
-            <div className="formula-sub">时间修正 t = 1（老曲）或 log₁₀(e^(Δt/86400/14) + 1) + 1（新曲温和加成）</div>
-            <div className="formula-sub">Δt = 投稿时间 − 前一期统计截止（秒）；老曲 Δt&lt;0 → t 恒为 1</div>
+            <div className="formula-sub">时间修正 t = 1（老曲）或 log₁₀(e^(Δt/86400/14) + 1) + 1，实现上限 2.615（新曲温和加成）</div>
+            <div className="formula-sub">Δt = 投稿时间 − 前一期统计截止（秒）；老曲 Δt&lt;0 → t 恒为 1；pubtime 缺失/异常按老曲 t=1</div>
+            <div className="formula-sub">系数与榜单排名 100% 可复现；逐曲 score 为近似还原（官方 t 含不可反推的首登榜加成）</div>
           </div>
           <div className="weight-table">
             <div className="wr"><span>Δ播放</span><b>× 1</b><i>再乘 t</i></div>

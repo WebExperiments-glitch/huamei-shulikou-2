@@ -12,7 +12,9 @@ function tNew(pub: number, prev: number): number {
   if (!pub) return 1
   const dt = pub - prev
   if (dt < 0) return 1
-  return Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
+  if (dt > 365 * 86400) return 1 // pubtime 异常（晚于本期起点 1 年以上）→ 按老曲
+  const t = Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
+  return Math.min(Math.max(t, 1), 2.615) // 钳制到官方实测上限 2.615
 }
 function tOld(pub: number, end: number): number {
   if (!pub) return 2.47
