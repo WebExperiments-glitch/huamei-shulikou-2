@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Body
 from ..core import db
 from ..services import boards as boards_svc
 from ..services import songs as songs_svc
+from ..services import rank as rank_svc
 
 router = APIRouter(prefix="/api/songs", tags=["songs"])
 
@@ -141,6 +142,32 @@ def formula_compare(
         if not song:
             raise HTTPException(404, "未找到该歌曲")
         return songs_svc.formula_compare(conn, bvid, board_type=board)
+    finally:
+        conn.close()
+
+
+@router.get("/{bvid}/auto-score")
+def auto_score(
+    bvid: str = Path(..., pattern="^BV[0-9A-Za-z]+$"),
+    board: str = Query("weekly", description="weekly|legend|annual 用于拆解的榜单"),
+):
+    """粘贴 BV/链接后的一键算分：自动取数 + 新旧公式拆解 + 最新一期汇总（公式实验室极简模式）。"""
+    conn = db.connect_source()
+    try:
+        song = songs_svc.get_song(conn, bvid)
+        if not song:
+            raise HTTPException(404, "未找到该歌曲（可先尝试手动入库，或粘贴在榜视频链接）")
+        cmp = songs_svc.formula_compare(conn, bvid, board_type=board)
+        entries = cmp.get("entries", [])
+        latest = entries[-1] if entries else None
+        return {
+            "bvid": bvid,
+            "board_type": board,
+            "song": song,
+            "latest": latest,
+            "entries": entries,
+            "weights": dict(rank_svc.DEFAULT_WEIGHTS),
+        }
     finally:
         conn.close()
 

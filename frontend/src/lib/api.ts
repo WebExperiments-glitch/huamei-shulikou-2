@@ -204,6 +204,9 @@ export const api = {
     request<ScoreBreakdown>(`/api/songs/${bvid}/score-breakdown?board=${board}`),
   formulaCompare: (bvid: string, board = "weekly") =>
     request<FormulaCompare>(`/api/songs/${bvid}/formula-compare?board=${board}`),
+  // 公式实验室极简模式：粘贴 BV/链接后一键算分（自动取数 + 新旧公式拆解 + 最新一期汇总）
+  autoScore: (bvid: string, board = "weekly") =>
+    request<AutoScoreResult>(`/api/songs/${bvid}/auto-score?board=${board}`),
   artists: (limit = 5000) =>
     request<{ kind: string; total: number; items: ArtistStat[] }>(`/api/stats/artists?limit=${limit}`),
   vocalists: (limit = 5000) =>
@@ -363,6 +366,7 @@ import type {
   ReentryTrack,
   ScoreBreakdown,
   FormulaCompare,
+  AutoScoreResult,
   Snapshot,
   Song,
   SongFacets,

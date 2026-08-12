@@ -140,6 +140,17 @@ export interface FormulaCompare {
   entries: FormulaCompareEntry[]
 }
 
+/** 公式实验室极简模式：粘贴 BV/链接后一键算分的结果聚合。 */
+export interface AutoScoreResult {
+  bvid: string
+  board_type: string
+  song: Song
+  /** 最新一期（entries 末项）的拆解；未上榜则为 null */
+  latest: FormulaCompareEntry | null
+  entries: FormulaCompareEntry[]
+  weights: Record<string, number>
+}
+
 export interface SuggestItem {
   bvid: string
   title: string
