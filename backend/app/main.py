@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -134,9 +135,31 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {
+    info = {
         "status": "ok",
         "version": config.APP_VERSION,
         "app": config.APP_NAME,
         "docs": "/docs",
     }
+    # 多重冗余·第四道防线：数据新鲜度哨兵。
+    # 真源库最新周榜距今天数 > 8 天即标记 stale（静默同步失败的首要信号）。
+    try:
+        from .core import db as db_mod
+        from .services import boards as boards_svc
+        conn = db_mod.connect(config.SOURCE_DB)
+        try:
+            issues = boards_svc.list_issues(conn, "weekly")
+            if issues:
+                latest = issues[0]["issue"]  # YYYYMMDD，list_issues 已降序
+                d = datetime.strptime(latest, "%Y%m%d")
+                age_days = (datetime.now() - d).days
+                info["data_freshness"] = {
+                    "latest_weekly_issue": latest,
+                    "age_days": age_days,
+                    "stale": age_days > 8,
+                }
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        info["data_freshness"] = {"error": str(e)}
+    return info

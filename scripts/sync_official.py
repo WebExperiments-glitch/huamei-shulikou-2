@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 让脚本能复用后端统一的 robots.txt 合规层（biliboard.uk 为允许，仅作透明校验/日志）。
 sys.path.insert(0, str(ROOT / "backend"))
 from app.core import robots as robots_mod  # noqa: E402
+from app.services import backup as backup_mod  # noqa: E402
 
 SYNC_UA = (
     "ShuliKouWeeklyBoard-Sync/1.0 "
@@ -31,6 +32,11 @@ SOURCE_DB = Path(r"D:\DeepSeek前端代码\前端\未确定\术力口周榜\bili
 
 BOARD_IDS = {"weekly": 1, "legend": 2, "annual": 3}
 PREFIXES = {"weekly": "official_", "legend": "legend_", "annual": "annual_"}
+
+# 榜单表统一结构（sync_one / 暂存交换共用）
+TABLE_SCHEMA = """(rank INTEGER, bvid TEXT, title TEXT, view INTEGER, favorite INTEGER,
+    coin INTEGER, like INTEGER, score REAL, pubtime INTEGER, issue_id INTEGER,
+    weeks_on_board INTEGER, peak_rank INTEGER)"""
 
 API = "https://biliboard.uk/api/public"
 SONGS_URI = "/songs"
@@ -118,13 +124,6 @@ def sync_one(client: httpx.Client, conn: sqlite3.Connection, board_type: str,
         if not isinstance(board, list) or not board:
             continue
         table = f"{prefix}{date_key}"
-        conn.execute(f'DROP TABLE IF EXISTS "{table}"')
-        conn.execute(
-            f"""CREATE TABLE "{table}" (rank INTEGER, bvid TEXT, title TEXT,
-                view INTEGER, favorite INTEGER, coin INTEGER, like INTEGER,
-                score REAL, pubtime INTEGER, issue_id INTEGER,
-                weeks_on_board INTEGER, peak_rank INTEGER)"""
-        )
         rows = []
         for r in board:
             stats = r.get("stats") or {}
@@ -136,10 +135,40 @@ def sync_one(client: httpx.Client, conn: sqlite3.Connection, board_type: str,
                 iid,
                 r.get("weeksOnBoard"), r.get("peakRank"),
             ))
-        conn.executemany(f'INSERT INTO "{table}" VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', rows)
-        conn.commit()
+        # —— 多重冗余·第二道防线：摄入逐行校验（剔除明显损坏行，保留可疑行并告警）——
+        from app.services import data_quality as dq_mod  # 懒导入，避免脚本启动重依赖
+        clean, warns = dq_mod.validate_issue_rows(rows, board_type)
+        for w in warns:
+            print(f"  [{board_type}] 校验告警 {date_key}: {w}")
+        if not clean:
+            print(f"  [{board_type}] {date_key} 全部行校验失败，跳过该期（保留旧表/无表，不写脏数据）")
+            continue
+        # —— 多重冗余·原子交换：先写暂存表，校验通过再 DROP 真表+RENAME，杜绝半成品表 ——
+        staging = f"_stg_{table}"
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{staging}"')
+            conn.execute(f'CREATE TABLE "{staging}" {TABLE_SCHEMA}')
+            conn.executemany(f'INSERT INTO "{staging}" VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', clean)
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+            conn.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
+            conn.commit()
+        except sqlite3.Error as e:
+            try:
+                conn.execute(f'DROP TABLE IF EXISTS "{staging}"')
+            except sqlite3.Error:
+                pass
+            print(f"  [{board_type}] {date_key} 写入失败已回滚暂存: {e}")
+            continue
         synced += 1
-        print(f"  [{board_type}] 同步 {date_key}: {len(rows)} 条")
+        dropped = len(rows) - len(clean)
+        print(f"  [{board_type}] 同步 {date_key}: {len(clean)} 条" + (f"（校验剔除 {dropped}）" if dropped else ""))
+        # —— 多重冗余·第三道防线：用本地公式重算与官方 score 交叉核验（偏差超阈告警）——
+        try:
+            cc = dq_mod.cross_check_issue(conn, board_type, date_key)
+            if cc.get("warn"):
+                print(f"  [{board_type}] ⚠ 交叉核验偏差率 {cc['mismatch_rate']*100:.1f}% 超阈值，请核查数据源/公式口径")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [{board_type}] 交叉核验跳过(非致命): {e}")
     return {
         "new": synced,
         "remote_latest": remote_latest_date,
@@ -159,6 +188,8 @@ def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 2
         remote_total = first.get("total", 0) if isinstance(first, dict) else 0
     except Exception:  # noqa: BLE001
         remote_total = 0
+    # 确保收录池表存在（缺失则建表，避免后续查询/插入静默失败或全量跳过）
+    conn.execute(f"CREATE TABLE IF NOT EXISTS songs_all ({', '.join(SONGS_COLS)})")
     local_total = 0
     try:
         local_total = conn.execute("SELECT COUNT(*) FROM songs_all").fetchone()[0]
@@ -183,17 +214,21 @@ def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 2
                     "SELECT 1 FROM songs_all WHERE bvid=?", (s.get("bvid"),)
                 ).fetchone()
             except sqlite3.Error:
-                exists = True
+                exists = False  # 表已确保存在；查询异常视为未收录，尝试插入
             if exists:
                 continue
-            conn.execute(
-                f"INSERT OR IGNORE INTO songs_all ({', '.join(SONGS_COLS)}) "
-                f"VALUES ({','.join('?' * len(SONGS_COLS))})",
-                tuple(_as_text(s.get(c)) if c in ("producers", "vocalists")
-                      else s.get(c) for c in SONGS_COLS),
-            )
-            conn.commit()
-            added += 1
+            try:
+                conn.execute(
+                    f"INSERT OR IGNORE INTO songs_all ({', '.join(SONGS_COLS)}) "
+                    f"VALUES ({','.join('?' * len(SONGS_COLS))})",
+                    tuple(_as_text(s.get(c)) if c in ("producers", "vocalists")
+                          else s.get(c) for c in SONGS_COLS),
+                )
+                conn.commit()
+                added += 1
+            except sqlite3.Error as e:
+                print(f"  [songs] 插入失败 {s.get('bvid')}: {e}")
+                conn.rollback() if hasattr(conn, "rollback") else None
         if len(items) < per_page:
             break
         page += 1
@@ -228,6 +263,8 @@ def run_pipeline(types: list[str] | tuple[str, ...] = ("weekly", "legend", "annu
     # robots.txt 透明校验：biliboard.uk 对 /api/public 为 Allow，确认无违规后再同步。
     rb = robots_mod.summary("biliboard.uk")
     print(f"[robots] biliboard.uk: {rb.get('allows_root') and 'Allow / (合规)' or rb}")
+    # —— 多重冗余·第一道防线：写入前对不可逆真源库做时间点备份 ——
+    backup_mod.backup_database(SOURCE_DB)
     conn = sqlite3.connect(SOURCE_DB)
     try:
         with httpx.Client(headers={"User-Agent": SYNC_UA}) as client:
