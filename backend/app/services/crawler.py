@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -687,6 +688,9 @@ _THINK_TTL = 120.0
 _THINK_CACHE_MAX = 2000  # LRU 上限，防止长期运行内存无界增长
 _THINK_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
 _THINK_THROTTLE = Throttle()
+# 冷查询硬超时（用户侧）：超过该时长则放弃等待、回退过期缓存（若有），绝不挂起 worker。
+# 后台抓取线程仍继续运行并在完成后写入缓存，故稍后重试多可命中。可用环境变量 THINK_TIMEOUT 覆盖（秒）。
+_THINK_TIMEOUT = float(os.environ.get("THINK_TIMEOUT", "12"))
 
 
 def _lookup_meta(bvid: str) -> dict:
@@ -759,27 +763,25 @@ def think_search(query: str, limit: int = 10) -> list[dict]:
             cands.append({"bvid": r["bvid"], "title": r["title"] or "", "title_cn": r["title_cn"] or "", "owner": r["owner"] or "", "matched": "cache"})
             if len(cands) >= limit:
                 break
+    # 尽力而为地预取候选详情（后台线程），使用户点开详情时大概率命中缓存，避免冷查询阻塞前端
+    if cands:
+        threading.Thread(target=_prefetch_details, args=([c["bvid"] for c in cands],), daemon=True).start()
     return cands[:limit]
 
 
-def think_detail(bvid: str) -> dict | None:
-    """抓取 BV 实时详情（播放/点赞/投币/收藏/评论/弹幕 + 元数据）。取不到返回 None。"""
-    bvid = (bvid or "").strip()
-    if not _BV_RE.fullmatch(bvid):
-        return None
-    now = time.time()
-    cached = _THINK_CACHE.get(bvid)
-    if cached is not None:
-        if now - cached[0] < _THINK_TTL:
-            _THINK_CACHE.move_to_end(bvid)  # 命中即刷新 LRU 位置
-            return cached[1]
-        _THINK_CACHE.pop(bvid, None)  # 过期项及时淘汰，避免陈旧数据滞留
+def _load_detail(bvid: str) -> dict | None:
+    """后台生产者：抓取 BV 实时详情并写入 _THINK_CACHE。失败返回 None（不改动缓存）。
+
+    与 think_detail 分离，使「硬超时」路径下：即便主线程已放弃等待，后台生产者仍
+    能把结果落盘到缓存，稍后重试即可命中，而非丢弃。
+    """
     status, data = fetch_view(bvid, _THINK_THROTTLE)
     if status != "ok":
         return None
     stat = data.get("stat") or {}
     owner = data.get("owner") or {}
     meta = _lookup_meta(bvid)
+    now = time.time()
     detail = {
         "bvid": bvid,
         "aid": data.get("aid"),
@@ -806,3 +808,49 @@ def think_detail(bvid: str) -> dict | None:
     if len(_THINK_CACHE) > _THINK_CACHE_MAX:
         _THINK_CACHE.popitem(last=False)  # 超出上限淘汰最久未用的条目
     return detail
+
+
+def _prefetch_details(bvids: list[str], max_prefetch: int = 5) -> None:
+    """搜索结果的「尽力而为」预取：在后台把未缓存的候选详情抓入 _THINK_CACHE，
+    使得用户点开详情时大概率直接命中缓存，避免冷查询阻塞前端。限速由 Throttle 保证。
+    """
+    done = 0
+    for bvid in bvids:
+        if done >= max_prefetch:
+            break
+        if _THINK_CACHE.get(bvid) is not None:
+            continue
+        # 单首失败不影响其余；异常静默吞掉（预取本就是优化，不应报错）
+        try:
+            think_detail(bvid)
+        except Exception:
+            logger.debug("预取 %s 失败（忽略）", bvid)
+        done += 1
+
+
+def think_detail(bvid: str, timeout: float = _THINK_TIMEOUT) -> dict | None:
+    """抓取 BV 实时详情（播放/点赞/投币/收藏/评论/弹幕 + 元数据）。取不到返回 None。
+
+    冷查询交由后台生产者线程（_load_detail）抓取并写缓存，主线程仅受硬超时约束：
+    超时即放弃等待、直接返回缓存中已有项（若有），否则按「未找到」处理，绝不挂起 worker。
+    后台生产者即便在超时后完成也会写入缓存，故稍后重试多半可命中。
+    """
+    bvid = (bvid or "").strip()
+    if not _BV_RE.fullmatch(bvid):
+        return None
+    now = time.time()
+    cached = _THINK_CACHE.get(bvid)
+    if cached is not None:
+        if now - cached[0] < _THINK_TTL:
+            _THINK_CACHE.move_to_end(bvid)  # 命中即刷新 LRU 位置
+            return cached[1]
+        _THINK_CACHE.pop(bvid, None)  # 过期项及时淘汰，避免陈旧数据滞留
+    # 冷查询：后台生产者抓取 + 写缓存；主线程硬超时后回退缓存（若有）
+    bg = threading.Thread(target=_load_detail, args=(bvid,), daemon=True)
+    bg.start()
+    bg.join(timeout)
+    fresh = _THINK_CACHE.get(bvid)
+    if fresh is not None:
+        _THINK_CACHE.move_to_end(bvid)
+        return fresh[1]
+    return None

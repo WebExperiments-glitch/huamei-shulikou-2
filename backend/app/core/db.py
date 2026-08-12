@@ -1,14 +1,28 @@
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from . import config
 
+# 线程级只读连接复用：每个线程复用同一只读连接，避免每请求新建连接
+# （高频 API 下省去频繁 open/close）。连接仅本线程使用，check_same_thread 安全。
+_ro_local = threading.local()
+
 
 def connect(path) -> sqlite3.Connection:
-    uri = Path(path).resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
-    conn.row_factory = sqlite3.Row
+    resolved = Path(path).resolve()
+    cache = getattr(_ro_local, "ro_conns", None)
+    if cache is None:
+        cache = {}
+        _ro_local.ro_conns = cache
+    key = str(resolved)
+    conn = cache.get(key)
+    if conn is None:
+        uri = resolved.as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        cache[key] = conn
     return conn
 
 
