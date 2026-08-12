@@ -465,9 +465,10 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
         w = rank_svc.OLD_WEIGHTS if is_old else rank_svc.DEFAULT_WEIGHTS
 
         cur_ts = ts_of(issue)
-        # 时间修正锚点：新公式以前一期截止为锚；旧公式以本周期结束为锚
+        # 时间修正锚点：新公式以「本周起点（前一期截止）」为锚 = 当前 issue 起点 cur_ts；
+        # 旧公式以本周期结束为锚 = cur_ts（D = floor((end-pub)/86400)）。
         if formula_version == "new":
-            anchor = ts_of(prev_issue) if prev_issue else max(0, cur_ts - 7 * 86400)
+            anchor = cur_ts
             pub = r.get("pubtime") or song_pub
             t = rank_svc.time_correction(int(pub or 0), anchor) if pub else 1.0
             t_assumed = pub is None
@@ -607,7 +608,9 @@ def formula_compare(conn, bvid: str, board_type: str = "weekly") -> dict:
         is_old = board_type == "weekly" and idx > 0 and idx < rank_svc.NEW_FORMULA_FROM_ISSUE
         official_version = "old" if is_old else "new"
         cur_ts = ts_of(issue)
-        anchor_new = ts_of(prev_issue) if prev_issue else max(0, cur_ts - 7 * 86400)
+        # 时间修正锚点：新公式以「本周起点（前一期截止）」为锚 = 当前 issue 起点 cur_ts；
+        # 注意 prev_issue 对应的是上一期起点（≠ 本期起点），必须用本期 cur_ts 作锚。
+        anchor_new = cur_ts
         anchor_old = cur_ts
         t_new = rank_svc.time_correction(int(pub or 0), anchor_new) if pub else 1.0
         t_old = rank_svc.time_correction_old(int(pub or 0), anchor_old) if pub else 2.47

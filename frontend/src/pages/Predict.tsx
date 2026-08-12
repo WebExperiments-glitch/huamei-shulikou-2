@@ -415,7 +415,8 @@ export default function Predict() {
           <br />
           <b style={{ color: "var(--text-dim)" }}>4 · 计分</b>：套用现行官方公式（issue ≥ 54）
           <code> 得分 = Δ播放×t + 15Δ收藏 + 3Δ点赞 + 30Δ投币</code>，
-          t = 1（老曲）或 log₁₀(e^(Δt/86400/14)+1)+1，周期起点取最新快照时刻。
+          t = T[D_floor] 7 档阶梯（D0 周初 → D6 周末，单调上升）T = [1.0527, 1.1381, 1.3900, 1.6061, 1.6900, 2.1574, 2.4700]，
+          D_floor = clamp(round((投稿时间 − 周期起点)/86400 − 0.5), 0, 6)，周期起点取最新快照时刻。
           <br />
           <b style={{ color: "var(--text-dim)" }}>5 · 入榜线</b>：近 {data?.cutline.lookback ?? 8} 期官方周榜第 {boardSize} 名得分的中位数。
           <br />

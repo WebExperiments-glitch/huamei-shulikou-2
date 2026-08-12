@@ -1,6 +1,6 @@
 # huamei术力口 — VOCALOID 周榜实时追踪
 
-> v0.1.0 | CC BY-NC 4.0
+> v0.1.1 | CC BY-NC 4.0
 
 实时追踪 B 站 VOCALOID 每周排行榜、传说曲、神话曲数据，提供多维度榜单、数据分析与 AI 智能体。
 

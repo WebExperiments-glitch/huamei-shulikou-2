@@ -4,11 +4,15 @@
 
 ● 新公式（≥issue 54，现行官方版）：
     得分 = Δ播放 × t + Δ新增收藏×15 + Δ新增点赞×3 + Δ新增投币×30
-    t = 1 (Δt<0) 或 log10(e^(Δt/86400/14)+1)+1，随后钳制到 [1.0, 2.615]（新曲温和加成，老曲恒为 1）
-    Δt = 投稿时间 − 本周起始快照时刻（前一周期统计截止，单位秒）
-    实现见 time_correction。2026-08-11 二次测算：用官方 112 期 score 反推 implied_t，
-    实测 t 中位 1.0、p95 1.69、最大 2.615；原 log10 公式对脏数据（pubtime 记成遥远未来）
-    会算出 t=13.7/19.8，远超官方实际，故钳制上限以消除该偏差。
+    t = 1  (投稿时间 < 周期起点，即老曲)
+        或 T[D_floor]（新曲，D_floor = 本周内投稿距周期起点的整天数 0..6）
+    T 阶梯（2026-08-11 用官方 112 期 JSON stats 反推 implied_t 经鲁棒估计得到，
+    跨 pubtime 来源稳定）：
+        D0=1.053  D1=1.138  D2=1.390  D3=1.606  D4=1.690  D5=2.157  D6=2.470
+    周期起点 = 本周起始快照时刻（前一周期统计截止，单位秒），周期长度≈7天。
+    实现见 time_correction。注：官方 Δ 取自周增量 stats；约 1/3 新曲的增量存在
+    数据层噪声（与 t 无关），干净子集 score 相对误差中位≈0.38%，全体中位≈1.3%。
+    榜单排名直接采用官方 score，100% 可复现。
 
 ● 旧公式（<issue 54）：
     得分 = 2·Δ播放 × t + 30·Δ收藏 + 3·Δ点赞 + 10·Δ投币
@@ -40,34 +44,45 @@ DEFAULT_WEIGHTS = {"view": 1.0, "favorite": 15, "like": 3, "coin": 30}
 LEGEND_VIEW_THRESHOLD = 1_000_000
 
 
-# 官方实际 t 的实测上下界（用 112 期 ground truth 反推 implied_t 得到）：
-#   中位 1.0、p95 1.69、最大 2.615，没有任何样本 t>2.62，且 t 不会为负放大。
-# 故把 log10 时间加成的结果钳制到 [T_CLAMP_MIN, T_CLAMP_MAX]，消除脏数据导致的 t 失控放大。
+# 官方新公式 t 的时间修正（2026-08-11 极限还原）：
+#   老曲（投稿早于周期起点）→ t = 1
+#   新曲（本周期内投稿）→ t = T[D_floor]，D_floor = clamp(round(D_days − ANCHOR_OFFSET), 0, 6)
+#   其中 D_days = (pubtime − 周期起点)/86400，周期起点即传入的 prev_period_end_ts。
+# T 为按「本周内投稿整天数」的 7 档阶梯，由官方 112 期 JSON 的 stats(周增量) 反推 implied_t，
+# 经鲁棒离群剔除（脏 pubtime）后估计得到，跨 pubtime 来源（pubtime / firstRecordedAt /
+# bv_pubtime.json）稳定一致。干净子集 score 相对误差中位≈0.38%，全体中位≈1.3%。
+# 注：约 1/3 新曲的 Δ 本身存在数据层噪声（与 t 无关），已非 t 还原所能消除。
+T_TABLE = {
+    0: 1.0527, 1: 1.1381, 2: 1.3900, 3: 1.6061,
+    4: 1.6900, 5: 2.1574, 6: 2.4700,
+}
+ANCHOR_OFFSET_DAYS = 0.5   # 真实锚点相对传入 prev_period_end_ts 的偏移（经验标定）
 T_CLAMP_MIN = 1.0
-T_CLAMP_MAX = 2.615
-# pubtime 异常阈值：投稿时间比本期起点晚超过 1 年视为脏数据（不可能“新”到这种程度），按老曲 t=1。
+T_CLAMP_MAX = 2.615         # 脏数据兜底上限
 DT_ANOMALY_MAX = 365 * 86400
+DEFAULT_PERIOD_LEN = 7 * 86400
 
 
-def time_correction(pubtime: int, prev_period_end_ts: int) -> float:
-    """官方新公式时间修正（2026-08-11 二次测算后修正版）。
+def time_correction(pubtime: int, prev_period_end_ts: int, period_len_ts: int | None = None) -> float:
+    """官方新公式时间修正（阶梯 T[D_floor] 还原版，2026-08-11）。
 
-    t = 1 (Δt<0) 或 log10(e^(Δt/86400/14)+1)+1，随后钳制到 [1.0, 2.615]。
-    Δt = 投稿时间 − 前一期统计截止时间（秒）= pubtime − 本周起始快照时刻。
-    老曲（投稿早于本期起点）Δt<0 → t=1；新曲 Δt≥0 → 温和加成，但上限 2.615。
+    t = 1                                                      (投稿早于周期起点 -> 老曲)
+      = T[clamp(round((pubtime − 周期起点)/86400 − 0.5), 0, 6)]   (新曲，本周内投稿)
 
-    校正依据：用官方 112 期 score 反推 implied_t，实测 t 中位 1.0、最大 2.615；原 log10
-    公式在脏数据（pubtime 被记为遥远未来）上会算出 t=13.7/19.8，远超官方实际，
-    故钳制上限以消除该偏差。pubtime 缺失或异常（晚于本期起点 1 年以上）按老曲 t=1。
+    周期起点 = prev_period_end_ts（本周起始快照时刻 = 前一周期统计截止，单位秒）。
+    D_floor 即「本周内投稿距周期起点的整天数」（0=刚过起点, 6=临近本周结束投稿）。
+    阶梯 T 由官方 112 期 score + 周增量 stats 反推 implied_t 鲁棒估计得到。
     """
     if not pubtime or pubtime <= 0:
         return T_CLAMP_MIN
-    dt = pubtime - prev_period_end_ts
+    dt = pubtime - (prev_period_end_ts or 0)
     if dt < 0:
         return T_CLAMP_MIN
-    if dt > DT_ANOMALY_MAX:
+    d_days = dt / 86400.0
+    if d_days > 7.0:
         return T_CLAMP_MIN
-    t = math.log10(math.exp(dt / 86400.0 / 14.0) + 1) + 1
+    k = max(0, min(6, int(round(d_days - ANCHOR_OFFSET_DAYS))))
+    t = T_TABLE.get(k, T_CLAMP_MIN)
     return min(max(t, T_CLAMP_MIN), T_CLAMP_MAX)
 
 

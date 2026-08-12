@@ -8,13 +8,31 @@ import { Empty, Spinner, fmt } from "../components/ui"
 const NEW_W = { view: 1, favorite: 15, like: 3, coin: 30 }
 const OLD_W = { view: 2, favorite: 30, like: 3, coin: 10 }
 
+// 官方新公式 t 还原（2026-08-11 极限还原，与后端 services/rank.py 逐字一致、可核验）
+const T_TABLE = [1.0527, 1.1381, 1.3900, 1.6061, 1.6900, 2.1574, 2.4700]
+const ANCHOR_OFFSET_DAYS = 0.5
+const T_CLAMP_MIN = 1.0
+const T_CLAMP_MAX = 2.615
+
+// 模拟 Python round（银行家舍入：.5 取偶），使前端与 rank.py 逐字一致
+function pyRound(x: number): number {
+  const f = Math.floor(x)
+  const frac = x - f
+  if (frac < 0.5) return f
+  if (frac > 0.5) return f + 1
+  return f % 2 === 0 ? f : f + 1
+}
+
 function tNew(pub: number, prev: number): number {
-  if (!pub) return 1
+  if (!pub) return T_CLAMP_MIN
   const dt = pub - prev
-  if (dt < 0) return 1
-  if (dt > 365 * 86400) return 1 // pubtime 异常（晚于本期起点 1 年以上）→ 按老曲
-  const t = Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
-  return Math.min(Math.max(t, 1), 2.615) // 钳制到官方实测上限 2.615
+  if (dt < 0) return T_CLAMP_MIN
+  if (dt > 365 * 86400) return T_CLAMP_MIN // pubtime 异常（晚于本期起点 1 年以上）→ 按老曲
+  const dDays = dt / 86400.0
+  if (dDays > 7.0) return T_CLAMP_MIN
+  const k = Math.max(0, Math.min(6, pyRound(dDays - ANCHOR_OFFSET_DAYS)))
+  const t = T_TABLE[k] ?? T_CLAMP_MIN
+  return Math.min(Math.max(t, T_CLAMP_MIN), T_CLAMP_MAX)
 }
 function tOld(pub: number, end: number): number {
   if (!pub) return 2.47

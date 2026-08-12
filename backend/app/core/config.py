@@ -22,7 +22,7 @@ AGENT_DB = DATA_DIR / "agent.sqlite"
 CACHE_DB = DATA_DIR / "cache.sqlite"
 
 APP_NAME = "huamei术力口"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 
 # 安全相关：允许跨域的前端源；生产可经环境变量 CORS_ORIGINS 收紧（逗号/分号分隔）。
 def cors_origins() -> list[str]:

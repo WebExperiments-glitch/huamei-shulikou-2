@@ -2,18 +2,36 @@ import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { fmt } from "../components/ui"
 
-/**
- * 时间修正函数（与后端 services/rank.py 完全一致，可核验）。
- * 新公式：t = 1 (Δt<0) 或 log10(e^(Δt/86400/14)+1)+1，随后钳制到 [1.0, 2.615]
- *   —— 上限 2.615 来自官方 112 期 implied_t 实测（中位 1.0、最大 2.615），消除脏数据导致的 t 失控放大。
- * 旧公式：t = 按「发行天数 D = floor((结束-投稿)/86400)」的阶梯系数
- */
+// 官方新公式 t 还原（2026-08-11 极限还原，与后端 services/rank.py 逐字一致、可核验）：
+//   老曲（投稿早于周期起点）→ t = 1
+//   新曲（本周期内投稿）→ t = T[D_floor]，D_floor = clamp(round((pubtime−起点)/86400 − 0.5), 0, 6)
+//   T 为按「本周内投稿整天数」的 7 档阶梯，由官方 112 期 JSON stats(周增量) 反推 implied_t 鲁棒估计得到。
+//   锚点偏移 ANCHOR_OFFSET_DAYS=0.5（真实锚点相对周期起点偏移约半天，奇偶半桶双峰揭示）。
+//   约 1/3 新曲的 Δ 本身存在数据层噪声（与 t 无关），干净子集 score 相对误差中位≈0.38%，全体中位≈1.3%。
+// 旧公式：t = 按「发行天数 D = floor((结束-投稿)/86400)」的阶梯系数
+const T_TABLE = [1.0527, 1.1381, 1.3900, 1.6061, 1.6900, 2.1574, 2.4700]
+const ANCHOR_OFFSET_DAYS = 0.5
+const T_CLAMP_MIN = 1.0
+const T_CLAMP_MAX = 2.615
+
+// 模拟 Python round（银行家舍入：.5 取偶），使前端与 rank.py 逐字一致
+function pyRound(x: number): number {
+  const f = Math.floor(x)
+  const frac = x - f
+  if (frac < 0.5) return f
+  if (frac > 0.5) return f + 1
+  return f % 2 === 0 ? f : f + 1
+}
+
 function timeCorrectionNew(pubtime: number, prevPeriodEnd: number): number {
-  if (!pubtime) return 1.0
+  if (!pubtime) return T_CLAMP_MIN
   const dt = pubtime - prevPeriodEnd
-  if (dt < 0) return 1.0
-  const t = Math.log10(Math.exp(dt / 86400 / 14) + 1) + 1
-  return Math.min(Math.max(t, 1.0), 2.615)
+  if (dt < 0) return T_CLAMP_MIN
+  const dDays = dt / 86400.0
+  if (dDays > 7.0) return T_CLAMP_MIN
+  const k = Math.max(0, Math.min(6, pyRound(dDays - ANCHOR_OFFSET_DAYS)))
+  const t = T_TABLE[k] ?? T_CLAMP_MIN
+  return Math.min(Math.max(t, T_CLAMP_MIN), T_CLAMP_MAX)
 }
 
 function timeCorrectionOld(pubtime: number, periodEnd: number): number {
@@ -86,8 +104,8 @@ export default function Formula() {
           <div className="card-title">现行公式（第 54 期起，≥2025-06-24）</div>
           <div className="formula-box">
             <div className="formula-line">得分 = <span className="hl-view">Δ播放 × t</span> + <span className="hl-fav">15 × Δ收藏</span> + <span className="hl-like">3 × Δ点赞</span> + <span className="hl-coin">30 × Δ硬币</span></div>
-            <div className="formula-sub">时间修正 t = 1（老曲）或 log₁₀(e^(Δt/86400/14) + 1) + 1，实现上限 2.615（新曲温和加成）</div>
-            <div className="formula-sub">Δt = 投稿时间 − 前一期统计截止（秒）；老曲 Δt&lt;0 → t 恒为 1；pubtime 缺失/异常按老曲 t=1</div>
+            <div className="formula-sub">时间修正 t = T[D_floor] 7 档阶梯（D0 周初 → D6 周末，单调上升）：T = [1.0527, 1.1381, 1.3900, 1.6061, 1.6900, 2.1574, 2.4700]</div>
+            <div className="formula-sub">D_floor = clamp(round((投稿时间 − 周期起点)/86400 − 0.5), 0, 6)；周期起点 = 前一期统计截止；pubtime 缺失/异常按 t=1.0</div>
             <div className="formula-sub">系数与榜单排名 100% 可复现；逐曲 score 为近似还原（官方 t 含不可反推的首登榜加成）</div>
           </div>
           <div className="weight-table">
