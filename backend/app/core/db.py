@@ -7,7 +7,39 @@ from . import config
 
 # 线程级只读连接复用：每个线程复用同一只读连接，避免每请求新建连接
 # （高频 API 下省去频繁 open/close）。连接仅本线程使用，check_same_thread 安全。
+#
+# ⚠️ 关键修正：API 层普遍在请求结束时调用 conn.close()（见 api/*.py 各 finally）。
+# 若直接复用裸 sqlite3.Connection，close 之后同线程再次 connect() 会拿到「已关闭的
+# 连接」→ "Cannot operate on a closed database" (500)。故用 _ROConn 包装：close() 改为
+# no-op，底层真实连接跨请求保持打开、可安全复用。
 _ro_local = threading.local()
+
+
+class _ROConn:
+    """只读连接包装：复用底层连接，抑制 close() 以免破坏线程级复用。"""
+
+    __slots__ = ("_real",)
+
+    def __init__(self, real: sqlite3.Connection):
+        object.__setattr__(self, "_real", real)
+
+    def close(self):  # 复用型连接不真正关闭，由进程退出时 OS 回收
+        return None
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, "_real"), name, value)
+
+    def __enter__(self):
+        return self  # with 进入返回代理自身，避免拿到裸连接被关闭
+
+    def __exit__(self, *exc):
+        return None  # 复用连接不在 with 退出时关闭
+
+    def __repr__(self):
+        return f"<_ROConn {object.__getattribute__(self, '_real')!r}>"
 
 
 def connect(path) -> sqlite3.Connection:
@@ -20,8 +52,9 @@ def connect(path) -> sqlite3.Connection:
     conn = cache.get(key)
     if conn is None:
         uri = resolved.as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
+        real = sqlite3.connect(uri, uri=True)
+        real.row_factory = sqlite3.Row
+        conn = _ROConn(real)
         cache[key] = conn
     return conn
 

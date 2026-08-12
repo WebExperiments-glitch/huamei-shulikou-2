@@ -8,7 +8,7 @@ import type { AIMessage, ToolCall, SourceItem, ChartSpec } from "../lib/conversa
 import { Markdown } from "../lib/markdown"
 import { ChartCard } from "./Agent/ChartCard"
 
-const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8010"
+const BASE = import.meta.env.VITE_API_BASE ?? "/api"
 
 function prettyArgs(raw: string): string {
   try {
