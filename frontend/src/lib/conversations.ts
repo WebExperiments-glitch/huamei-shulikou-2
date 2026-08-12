@@ -102,7 +102,7 @@ if (typeof window !== "undefined") {
 // 后端不可用时静默降级，全部退化为纯前端 localStorage。
 // ---------------------------------------------------------------------------
 const CLIENT_KEY = "hb-agent-client-id"
-const BASE = import.meta.env.VITE_API_BASE ?? "/api"
+const BASE = import.meta.env.VITE_API_BASE ?? ""
 
 function getClientId(): string {
   try {
