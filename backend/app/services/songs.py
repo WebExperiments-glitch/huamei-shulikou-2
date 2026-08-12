@@ -465,10 +465,10 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
         w = rank_svc.OLD_WEIGHTS if is_old else rank_svc.DEFAULT_WEIGHTS
 
         cur_ts = ts_of(issue)
-        # 时间修正锚点：新公式以「本周起点（前一期截止）」为锚 = 当前 issue 起点 cur_ts；
+        # 时间修正锚点：新公式以「周期起点（前一期截止 = cur_ts − 7 天）」为锚；
         # 旧公式以本周期结束为锚 = cur_ts（D = floor((end-pub)/86400)）。
         if formula_version == "new":
-            anchor = cur_ts
+            anchor = cur_ts - 7 * 86400  # 修正：周期起点 = 本 issue 起点，非 issue 当天（周期终点）
             pub = r.get("pubtime") or song_pub
             t = rank_svc.time_correction(int(pub or 0), anchor) if pub else 1.0
             t_assumed = pub is None
