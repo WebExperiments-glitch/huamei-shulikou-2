@@ -854,23 +854,26 @@ def resolve_bvid(raw: str) -> str | None:
     s = (raw or "").strip()
     m = _BV_RE.search(s)
     if m:
-        return m.group(0).upper()
+        return m.group(0)
     if s.lower().startswith("http://") or s.lower().startswith("https://"):
         try:
             resp = httpx.get(s, follow_redirects=True, timeout=12)
             m2 = _BV_RE.search(str(resp.url))
             if m2:
-                return m2.group(0).upper()
+                # B站 bvid 大小写敏感，必须保留原始大小写（如 BV1Qkun6vEgb），
+                # 大写化会导致拼接出的 B站链接 404。
+                return m2.group(0)
         except Exception:
             pass
     return None
 
 
-def _lookup_local_board(bvid: str) -> tuple[str, int] | None:
-    """从本地周榜/传说曲/年榜各期表找该 bvid，返回 (title, pubtime) 或 None。
+def _lookup_local_board(bvid: str) -> tuple[str, str, int] | None:
+    """从本地周榜/传说曲/年榜各期表找该 bvid，返回 (canonical_bvid, title, pubtime) 或 None。
 
-    用于手动入库：已上榜但没收录池的歌曲（如刚发布的新一期）可直接借榜单信息
-    补全入库，零网络依赖、不受 B站对服务端出口的风控影响。
+    canonical_bvid 取榜单表中**原始大小写**的 BV（B站大小写敏感），避免入库后被改写
+    成全大写导致 B站链接 404。用于手动入库：已上榜但没收录池的歌曲（如刚发布的新一期）
+    可直接借榜单信息补全入库，零网络依赖、不受 B站对服务端出口的风控影响。
     """
     conn = db.connect_source()
     try:
@@ -886,10 +889,10 @@ def _lookup_local_board(bvid: str) -> tuple[str, int] | None:
                 if not (len(key) == 8 and key.isdigit()):
                     continue
                 row = conn.execute(
-                    f'SELECT title, pubtime FROM "{t}" WHERE LOWER(bvid)=LOWER(?)', (bvid,)
+                    f'SELECT bvid, title, pubtime FROM "{t}" WHERE LOWER(bvid)=LOWER(?)', (bvid,)
                 ).fetchone()
                 if row and row["title"]:
-                    return (row["title"], int(row["pubtime"] or 0))
+                    return (row["bvid"], row["title"], int(row["pubtime"] or 0))
     finally:
         conn.close()
     return None
@@ -908,16 +911,16 @@ def ingest_song(bvid: str) -> dict:
     """
     from . import crawler
 
-    bvid = (bvid or "").strip().upper()
+    bvid = (bvid or "").strip()
     if not _BV_RE.fullmatch(bvid):
         raise ValueError("无效的 B站 BV 号")
 
     title = None
     pubtime = 0
-    # 1) 本地榜单表优先
+    # 1) 本地榜单表优先（返回原始大小写的 canonical bvid，避免 B站链接 404）
     found = _lookup_local_board(bvid)
     if found:
-        title, pubtime = found
+        bvid, title, pubtime = found
     else:
         # 2) 兜底：B站在线（子进程；服务端出口被风控时失败）
         if not crawler._robots_allowed():
