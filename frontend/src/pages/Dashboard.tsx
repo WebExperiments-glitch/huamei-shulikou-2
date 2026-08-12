@@ -12,10 +12,6 @@ export default function Dashboard() {
     queryKey: ["boards"],
     queryFn: api.boards,
   })
-
-  if (isLoading) return <Spinner />
-  if (error) return <Empty label={`后端连接失败: ${(error as Error).message}`} />
-  const boards = data?.boards ?? []
   const weeklyQ = useQuery({ queryKey: ["issues", "weekly"], queryFn: () => api.boardIssues("weekly") })
   const { theme } = useTheme()
   const pal = getChartPalette(theme)
@@ -43,6 +39,11 @@ export default function Dashboard() {
       }],
     }
   }, [weeklyQ.data, pal])
+
+  if (isLoading) return <Spinner />
+  if (error) return <Empty label={`后端连接失败: ${(error as Error).message}`} />
+
+  const boards = data?.boards ?? []
 
   return (
     <>
