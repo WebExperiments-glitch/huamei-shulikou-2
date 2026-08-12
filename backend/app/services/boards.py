@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from ..core import db
 from .rank import (
@@ -33,7 +34,33 @@ def _table_name(board_type: str, issue_key: str) -> str:
     return f"{PREFIXES[board_type]}{issue_key}"
 
 
+# 进程内缓存：list_issues 结果仅在「同步写库」时变化。以 board_type 为 key，
+# TTL 兜底（默认 600s）：最坏情况仅在新同步后 10 分钟内 issue 级元信息略旧，
+# 且只影响 entries/is_annual 等元信息，不影响榜单正文（正文每次现读）。
+_ISSUES_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_ISSUES_CACHE_TTL = 600.0
+
+
+def invalidate_issues_cache(board_type: str | None = None) -> None:
+    """同步写库成功后调用，使缓存失效（scripts/sync_official 可接入）。"""
+    if board_type is None:
+        _ISSUES_CACHE.clear()
+    else:
+        _ISSUES_CACHE.pop(board_type, None)
+
+
 def list_issues(conn, board_type: str) -> list[dict]:
+    """列出某榜全部期次（按日期降序）。结果进程内缓存（见 _ISSUES_CACHE）。"""
+    now = time.monotonic()
+    hit = _ISSUES_CACHE.get(board_type)
+    if hit is not None and now - hit[0] < _ISSUES_CACHE_TTL:
+        return hit[1]
+    data = _list_issues_real(conn, board_type)
+    _ISSUES_CACHE[board_type] = (now, data)
+    return data
+
+
+def _list_issues_real(conn, board_type: str) -> list[dict]:
     """列出某榜全部期次（按日期降序）。"""
     prefix = PREFIXES[board_type]
     tables = [
@@ -48,9 +75,13 @@ def list_issues(conn, board_type: str) -> list[dict]:
         if not ISSUE_RE.match(key):
             continue
         try:
-            # weekly 表无 is_annual 列（legend/annual 才有），动态构造查询
-            cols = {c[1] for c in conn.execute(f'PRAGMA table_info("{t}")').fetchall()}
-            sel = "COUNT(*) AS n, MIN(issue_id) AS iid" + (", MAX(is_annual) AS ia" if "is_annual" in cols else ", 0 AS ia")
+            if board_type == "weekly":
+                # weekly 表结构上不含 is_annual 列，直接跳过 PRAGMA 探测，立省 112 次查询
+                is_annual = 0
+            else:
+                cols = {c[1] for c in conn.execute(f'PRAGMA table_info("{t}")').fetchall()}
+                is_annual = 1 if "is_annual" in cols else 0
+            sel = "COUNT(*) AS n, MIN(issue_id) AS iid" + (", MAX(is_annual) AS ia" if is_annual else ", 0 AS ia")
             row = conn.execute(f'SELECT {sel} FROM "{t}"').fetchone()
             is_annual = int(row["ia"] or 0) if row else 0
             n = int(row["n"]) if row else 0
@@ -142,10 +173,13 @@ def get_issue_rankings(conn, board_type: str, issue_key: str, top: int = 100, of
     ).fetchone()
     if not exists:
         return []
-    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    has_meta_cols = board_type != "weekly"  # weekly 表无 producers/vocalists 列，跳过 PRAGMA
+    if has_meta_cols:
+        cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+        has_meta_cols = "producers" in cols
     rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY rank LIMIT ? OFFSET ?', (top, offset)).fetchall()
     out = []
-    if "producers" in cols:
+    if has_meta_cols:
         for r in rows:
             d = dict(r)
             d["producers"] = db.parse_json_list(d.get("producers"))
@@ -189,12 +223,16 @@ def get_song_issue(conn, board_type: str, issue_key: str, bvid: str) -> dict | N
     if not ISSUE_RE.match(issue_key):
         return None
     table = _table_name(board_type, issue_key)
-    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    # weekly 表无 producers/vocalists 列，直接跳过 PRAGMA 探测（get_song_history 循环内调用频繁）
+    has_meta_cols = board_type != "weekly"
+    if has_meta_cols:
+        cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+        has_meta_cols = "producers" in cols
     r = conn.execute(f'SELECT * FROM "{table}" WHERE LOWER(bvid)=LOWER(?)', (bvid,)).fetchone()
     if not r:
         return None
     d = dict(r)
-    if "producers" in cols:
+    if has_meta_cols:
         d["producers"] = db.parse_json_list(d.get("producers"))
         d["vocalists"] = db.parse_json_list(d.get("vocalists"))
     else:

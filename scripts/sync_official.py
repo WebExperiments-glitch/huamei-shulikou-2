@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.core import robots as robots_mod  # noqa: E402
 from app.services import backup as backup_mod  # noqa: E402
+from app.services import boards as boards_svc  # noqa: E402
 
 SYNC_UA = (
     "ShuliKouWeeklyBoard-Sync/1.0 "
@@ -270,6 +271,7 @@ def run_pipeline(types: list[str] | tuple[str, ...] = ("weekly", "legend", "annu
         with httpx.Client(headers={"User-Agent": SYNC_UA}) as client:
             for bt in types:
                 summary["boards"][bt] = sync_one(client, conn, bt)
+                boards_svc.invalidate_issues_cache(bt)  # 写库后立即失效 list_issues 缓存
                 summary["checked"].append(bt)
             if songs:
                 summary["songs"] = sync_songs(client, conn)

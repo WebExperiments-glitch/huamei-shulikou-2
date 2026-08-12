@@ -12,6 +12,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from scrapling.fetchers import Fetcher
@@ -379,7 +380,8 @@ def _upsert(conn: sqlite3.Connection, entry: dict, status: str, data: dict) -> N
             int(time.time()),
         ),
     )
-    conn.commit()
+    # 注意：不再逐行 commit，由调用方 _run 批量提交（见 COMMIT_EVERY），
+    # 千首级抓取可将千次事务提交降为数十次，显著降低开销。
 
 
 def _save_snapshot(conn: sqlite3.Connection, scope: str) -> int:
@@ -417,6 +419,7 @@ def _run(scope: str, recent_n: int) -> None:
         conn = connect_hot(readonly=False)
         throttle = Throttle()
         try:
+            commit_every = 50
             for i, entry in enumerate(pool):
                 status, data = fetch_stat(entry["bvid"], throttle)
                 if status == "ok":
@@ -428,9 +431,18 @@ def _run(scope: str, recent_n: int) -> None:
                 else:
                     _upsert(conn, entry, "error", {})
                     key = "failed"
+                if (i + 1) % commit_every == 0:
+                    conn.commit()  # 每 50 首落一次盘，平衡持久性与事务开销
                 with TASK_LOCK:
                     TASK["done"] = i + 1
                     TASK[key] += 1
+            conn.commit()  # 收尾提交剩余未落盘的写入
+        except Exception:
+            try:
+                conn.commit()  # 出错也尽量保留已抓取的成果
+            except Exception:
+                pass
+            raise
         finally:
             conn.close()
         with TASK_LOCK:
@@ -672,7 +684,8 @@ _BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 
 # 详情缓存：避免同一 BV 短期内重复打 B站（风控友好）
 _THINK_TTL = 120.0
-_THINK_CACHE: dict[str, tuple[float, dict]] = {}
+_THINK_CACHE_MAX = 2000  # LRU 上限，防止长期运行内存无界增长
+_THINK_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
 _THINK_THROTTLE = Throttle()
 
 
@@ -756,8 +769,11 @@ def think_detail(bvid: str) -> dict | None:
         return None
     now = time.time()
     cached = _THINK_CACHE.get(bvid)
-    if cached and now - cached[0] < _THINK_TTL:
-        return cached[1]
+    if cached is not None:
+        if now - cached[0] < _THINK_TTL:
+            _THINK_CACHE.move_to_end(bvid)  # 命中即刷新 LRU 位置
+            return cached[1]
+        _THINK_CACHE.pop(bvid, None)  # 过期项及时淘汰，避免陈旧数据滞留
     status, data = fetch_view(bvid, _THINK_THROTTLE)
     if status != "ok":
         return None
@@ -786,4 +802,7 @@ def think_detail(bvid: str) -> dict | None:
         "fetched_at": int(now),
     }
     _THINK_CACHE[bvid] = (now, detail)
+    _THINK_CACHE.move_to_end(bvid)
+    if len(_THINK_CACHE) > _THINK_CACHE_MAX:
+        _THINK_CACHE.popitem(last=False)  # 超出上限淘汰最久未用的条目
     return detail
