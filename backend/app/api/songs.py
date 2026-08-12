@@ -84,6 +84,18 @@ def name_suggest(
         conn.close()
 
 
+@router.get("/search-bilibili")
+def search_bilibili_api(
+    q: str = Query("", description="曲名/关键词，用于在 B站 搜索定位 BV"),
+    limit: int = Query(10, ge=1, le=20),
+):
+    """在 B站 搜索视频（WBI 签名），让「公式实验室」支持粘贴曲名定位 BV。"""
+    if not q.strip():
+        return {"items": []}
+    items = songs_svc.search_bilibili(q.strip(), limit=limit)
+    return {"items": items}
+
+
 @router.get("/{bvid}")
 def get_song(bvid: str = Path(..., pattern="^BV[0-9A-Za-z]+$")):
     conn = db.connect_source()
@@ -160,16 +172,49 @@ def auto_score(
         cmp = songs_svc.formula_compare(conn, bvid, board_type=board)
         entries = cmp.get("entries", [])
         latest = entries[-1] if entries else None
+        # 未上榜的歌曲：实时回源 B站 取当前统计（不入库、不依赖周榜），供「已自动抓到」展示
+        live = None
+        if latest is None:
+            try:
+                code, data = songs_svc._fetch_bili_view_subprocess(bvid)
+                if code == "0" and data:
+                    stat = data.get("stat") or {}
+                    live = {
+                        "title": data.get("title"),
+                        "author": (data.get("owner") or {}).get("name"),
+                        "pubtime": int(data.get("pubdate") or 0),
+                        "view": int(stat.get("view") or 0),
+                        "favorite": int(stat.get("favorite") or 0),
+                        "like": int(stat.get("like") or 0),
+                        "coin": int(stat.get("coin") or 0),
+                        "share": int(stat.get("share") or 0),
+                    }
+            except Exception:
+                live = None
         return {
             "bvid": bvid,
             "board_type": board,
+            "on_board": latest is not None,
             "song": song,
             "latest": latest,
             "entries": entries,
+            "live": live,
             "weights": dict(rank_svc.DEFAULT_WEIGHTS),
         }
     finally:
         conn.close()
+
+
+@router.get("/search-bilibili")
+def search_bilibili_api(
+    q: str = Query("", description="曲名/关键词，用于在 B站 搜索定位 BV"),
+    limit: int = Query(10, ge=1, le=20),
+):
+    """在 B站 搜索视频（WBI 签名），让「公式实验室」支持粘贴曲名定位 BV。"""
+    if not q.strip():
+        return {"items": []}
+    items = songs_svc.search_bilibili(q.strip(), limit=limit)
+    return {"items": items}
 
 
 @router.post("/ingest")

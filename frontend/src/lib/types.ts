@@ -144,11 +144,36 @@ export interface FormulaCompare {
 export interface AutoScoreResult {
   bvid: string
   board_type: string
+  /** 是否在术力口周榜上过榜（有周榜分数可算） */
+  on_board?: boolean
   song: Song
   /** 最新一期（entries 末项）的拆解；未上榜则为 null */
   latest: FormulaCompareEntry | null
   entries: FormulaCompareEntry[]
   weights: Record<string, number>
+  /** 未上榜歌曲实时回源 B站 的当前统计（可能为空） */
+  live?: BiliLiveStat | null
+}
+
+/** 在 B站 搜索视频返回的候选（公式实验室搜歌名定位 BV 用） */
+export interface BiliSearchItem {
+  bvid: string
+  title: string
+  author: string
+  play: number
+  pubdate: number
+}
+
+/** auto-score 对未上榜歌曲实时回源 B站 取到的当前统计 */
+export interface BiliLiveStat {
+  title: string | null
+  author: string | null
+  pubtime: number
+  view: number
+  favorite: number
+  like: number
+  coin: number
+  share: number
 }
 
 export interface SuggestItem {

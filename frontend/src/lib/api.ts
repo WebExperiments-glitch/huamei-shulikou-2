@@ -207,6 +207,9 @@ export const api = {
   // 公式实验室极简模式：粘贴 BV/链接后一键算分（自动取数 + 新旧公式拆解 + 最新一期汇总）
   autoScore: (bvid: string, board = "weekly") =>
     request<AutoScoreResult>(`/api/songs/${bvid}/auto-score?board=${board}`),
+  // 公式实验室：粘贴曲名在 B站 搜索定位 BV（WBI 签名）
+  searchBilibili: (q: string, limit = 10) =>
+    request<{ items: BiliSearchItem[] }>(`/api/songs/search-bilibili?q=${encodeURIComponent(q)}&limit=${limit}`),
   artists: (limit = 5000) =>
     request<{ kind: string; total: number; items: ArtistStat[] }>(`/api/stats/artists?limit=${limit}`),
   vocalists: (limit = 5000) =>

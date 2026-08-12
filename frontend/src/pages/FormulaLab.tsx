@@ -2,12 +2,17 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../lib/api"
+import type { BiliSearchItem } from "../lib/types"
 import { Autocomplete, type Suggestion } from "../components/Autocomplete"
 import { Spinner, fmt } from "../components/ui"
 
 function extractBvid(raw: string): string | null {
   const m = raw.match(/BV[0-9A-Za-z]+/i)
   return m ? m[0] : null
+}
+
+function isUrl(raw: string): boolean {
+  return /https?:\/\//.test(raw) || raw.includes("b23.tv") || raw.toLowerCase().includes("bilibili")
 }
 
 function fmtDate(ts?: number | null): string {
@@ -34,6 +39,9 @@ export default function FormulaLab() {
   const [q, setQ] = useState("")
   const [bvid, setBvid] = useState<string | null>(null)
   const [title, setTitle] = useState("")
+  const [candidates, setCandidates] = useState<BiliSearchItem[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchErr, setSearchErr] = useState<string | null>(null)
 
   const scoreQ = useQuery({
     queryKey: ["auto-score", bvid],
@@ -42,7 +50,7 @@ export default function FormulaLab() {
       try {
         return await api.autoScore(bvid)
       } catch (e: any) {
-        // 未在收录库：自动入库（爬虫自己爬 —— 对 B站术力口在榜曲本地补入），再重试算分
+        // 未在收录库：自动入库（爬虫自己爬 —— 服务端子进程回源 B站，当前出口可通），再重试算分
         const msg = String(e?.message || "")
         if (msg.includes("404")) {
           await api.ingestSong(bvid)
@@ -54,6 +62,66 @@ export default function FormulaLab() {
     enabled: !!bvid,
     retry: false,
   })
+
+  async function doSearch(text: string) {
+    setSearching(true)
+    setSearchErr(null)
+    try {
+      const r = await api.searchBilibili(text, 10)
+      if (r.items && r.items.length) {
+        setCandidates(r.items)
+        setBvid(null)
+      } else {
+        setCandidates([])
+        setSearchErr("在 B站 没搜到相关视频，换个关键词试试？")
+      }
+    } catch (e: any) {
+      setSearchErr(String(e?.message || "搜索失败"))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  async function resolveUrl(raw: string) {
+    setSearching(true)
+    setSearchErr(null)
+    try {
+      // 交给后端解析（支持 b23.tv 短链/重定向），并自动入库（爬虫自己爬）
+      const song = await api.ingestSong(raw)
+      setBvid(song.bvid)
+      setTitle(song.title || raw)
+      setCandidates(null)
+    } catch (e: any) {
+      setSearchErr(String(e?.message || "解析失败"))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  function handleCommit(v: string) {
+    const bv = extractBvid(v)
+    if (bv) {
+      setBvid(bv)
+      setTitle(v)
+      setCandidates(null)
+      setSearchErr(null)
+      return
+    }
+    if (isUrl(v)) {
+      void resolveUrl(v)
+      return
+    }
+    // 纯曲名：在 B站 搜歌名定位 BV
+    void doSearch(v)
+  }
+
+  function clearAll() {
+    setBvid(null)
+    setQ("")
+    setTitle("")
+    setCandidates(null)
+    setSearchErr(null)
+  }
 
   const data = scoreQ.data
   const latest = data?.latest ?? null
@@ -72,7 +140,7 @@ export default function FormulaLab() {
           </div>
           <h1>公式可视化实验室</h1>
           <p className="muted" style={{ maxWidth: 780 }}>
-            把 B站 视频链接或 BV 号粘贴到下面（或直接搜索曲名），系统会自动抓取数据、按现行公式算分并拆解——
+            把 B站 视频链接、BV 号，或直接搜曲名粘贴到下面——系统会自动爬数据、按现行公式算分并拆解，
             不用你填任何数字。
           </p>
         </div>
@@ -85,8 +153,11 @@ export default function FormulaLab() {
         <div className="lib-filters">
           <Autocomplete
             value={q}
-            onChange={setQ}
-            placeholder="粘贴 B站 视频链接 / BV号，或搜索曲名…"
+            onChange={(v) => {
+              setQ(v)
+              if (candidates) setCandidates(null)
+            }}
+            placeholder="粘贴 B站 视频链接 / BV号，或直接搜曲名…"
             fetchSuggestions={(qq) =>
               api.songSuggest(qq, 8).then((r) =>
                 r.items.map(
@@ -101,28 +172,46 @@ export default function FormulaLab() {
             onSelectItem={(item) => {
               setBvid(item.value)
               setTitle(item.label)
+              setCandidates(null)
+              setSearchErr(null)
             }}
-            onCommit={(v) => {
-              const m = extractBvid(v)
-              if (m) {
-                setBvid(m)
-                setTitle(v)
-              }
-            }}
+            onCommit={handleCommit}
           />
           {bvid && (
-            <button
-              className="chip"
-              onClick={() => {
-                setBvid(null)
-                setQ("")
-                setTitle("")
-              }}
-            >
+            <button className="chip" onClick={clearAll}>
               清除
             </button>
           )}
         </div>
+
+        {searching && <Spinner />}
+
+        {candidates && (
+          <div className="bili-candidates">
+            <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>
+              在 B站 搜到以下视频，点选一个：
+            </div>
+            {candidates.length === 0 && <div className="muted">无结果</div>}
+            {candidates.map((c) => (
+              <button
+                key={c.bvid}
+                className="cand-item"
+                onClick={() => {
+                  setBvid(c.bvid)
+                  setTitle(c.title)
+                  setCandidates(null)
+                }}
+              >
+                <span className="cand-title">{c.title}</span>
+                <span className="cand-sub">
+                  {c.author} · 播放 {fmt(c.play)} · {c.bvid}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {searchErr && <div className="error-box">{searchErr}</div>}
 
         {bvid && (
           <div className="muted" style={{ fontSize: 12.5, margin: "6px 0" }}>
@@ -136,16 +225,31 @@ export default function FormulaLab() {
           <div className="error-box">
             无法自动算分：{(scoreQ.error as any)?.message || "未知错误"}
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              提示：目前自动算分仅支持「已在 B站术力口周榜收录」的歌曲（服务端无法直接直连 B站 抓取任意视频）。
+              提示：粘贴的链接/BV 需是真实存在的 B站 视频；视频被删除或设为私享时会抓取失败。
             </div>
           </div>
         )}
 
         {data && !latest && (
-          <div className="muted" style={{ marginTop: 10 }}>
-            该曲已收录，但暂未进入周榜，无周榜得分。当前累计数据：播放 {fmt(data.song.view ?? 0)} ·
-            收藏 {fmt(data.song.favorite ?? 0)} · 点赞 {fmt(data.song.like ?? 0)} · 硬币{" "}
-            {fmt(data.song.coin ?? 0)}
+          <div className="auto-crawled-box">
+            <div className="ac-badge">已从 B站 自动抓取 ✓</div>
+            <div className="song-meta-row">
+              <span className="meta-title">
+                {(data.live?.title) || data.song.title_cn || data.song.title}
+              </span>
+              <span className="muted">
+                {fmtDate(data.live?.pubtime || data.song.pubtime)} 投稿 · {bvid}
+              </span>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              当前 B站 数据：播放 {fmt(data.live?.view ?? 0)} · 收藏{" "}
+              {fmt(data.live?.favorite ?? 0)} · 点赞 {fmt(data.live?.like ?? 0)} · 硬币{" "}
+              {fmt(data.live?.coin ?? 0)} · 分享 {fmt(data.live?.share ?? 0)}
+              {data.live?.author ? ` · UP ${data.live.author}` : ""}
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              这首暂未上过术力口周榜，没有周榜分数可算（公式算的是周榜每周增量）。已自动把它收进收录库。
+            </div>
           </div>
         )}
 

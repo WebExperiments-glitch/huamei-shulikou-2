@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import time
+import os
 
 from ..core import db
 from ..core import cache as cache_mod
@@ -816,28 +817,19 @@ def vocalist_stats(conn, limit: int = 50, offset: int = 0) -> dict:
 
 
 def _fetch_bili_view_subprocess(bvid: str) -> tuple[str, dict]:
-    """用独立子进程抓 B站 view 接口，绕过 uvicorn 常驻进程出口被 B站风控的问题。
+    """用独立子进程抓 B站 view 接口（WBI 签名，降低被风控概率）。
 
-    子进程拥有与交互式 Bash 相同的出网出口，可稳定抓取（api.bilibili.com 对
-    uvicorn 进程的出口 IP 返回 -404/deleted 风控，对 Bash/子进程出口正常）。
-    返回 (code_str, data_dict)：code_str 为 B站返回的 code（"0" 表示成功）。
+    子进程拥有与交互式 Bash 相同的出网出口，可稳定抓取（api.bilibili.com 当前
+    对该出口可达）。返回 (code_str, data_dict)：code_str 为 B站返回的 code（"0" 成功）。
     """
-    script = (
-        "import sys, json, httpx\n"
-        "bvid = sys.argv[1]\n"
-        "headers = {'Referer': 'https://www.bilibili.com/', 'User-Agent': 'Mozilla/5.0'}\n"
-        "try:\n"
-        "    r = httpx.get('https://api.bilibili.com/x/web-interface/view',\n"
-        "                 params={'bvid': bvid}, headers=headers, timeout=15)\n"
-        "    p = r.json()\n"
-        "    print(json.dumps({'code': p.get('code'), 'data': p.get('data')}))\n"
-        "except Exception as e:\n"
-        "    print(json.dumps({'code': 'error', 'msg': str(e)}))\n"
-    )
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
         res = subprocess.run(
-            [sys.executable, "-c", script, bvid],
-            capture_output=True, text=True, timeout=30,
+            [sys.executable, "-c",
+             "from app.services import bili_fetch_cli; bili_fetch_cli.main()",
+             "view", bvid],
+            cwd=backend_dir,
+            capture_output=True, text=True, timeout=40,
         )
         out = (res.stdout or "").strip()
         if not out:
@@ -917,18 +909,20 @@ def ingest_song(bvid: str) -> dict:
 
     title = None
     pubtime = 0
+    crawled = False
     # 1) 本地榜单表优先（返回原始大小写的 canonical bvid，避免 B站链接 404）
     found = _lookup_local_board(bvid)
     if found:
         bvid, title, pubtime = found
     else:
-        # 2) 兜底：B站在线（子进程；服务端出口被风控时失败）
+        # 2) 兜底：B站在线（独立子进程；WBI 签名，当前出口可通）
         if not crawler._robots_allowed():
             return {"ok": False, "status": "blocked", "bvid": bvid}
         code, data = _fetch_bili_view_subprocess(bvid)
         if code == "0":
             title = data.get("title") or ""
             pubtime = int(data.get("pubdate") or 0)
+            crawled = True
         elif code in ("-404", "-400"):
             return {"ok": False, "status": "deleted", "bvid": bvid}
         else:
@@ -958,7 +952,9 @@ def ingest_song(bvid: str) -> dict:
             w.execute(
                 "INSERT INTO songs_all (bvid, title, title_cn, pubtime, first_recorded_at, producers, vocalists) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (bvid, title, None, pubtime, None, prod_json, voc_json),
+                (bvid, title, None, pubtime,
+                 time.strftime("%Y-%m-%d") if crawled else None,
+                 prod_json, voc_json),
             )
         w.commit()
     finally:
@@ -976,3 +972,28 @@ def ingest_song(bvid: str) -> dict:
     finally:
         rconn.close()
     return {"ok": True, "song": song, "updated": bool(existing)}
+
+
+def search_bilibili(q: str, limit: int = 10) -> list[dict]:
+    """在 B站 搜索视频（WBI 签名），返回候选列表。
+
+    用于「公式实验室」的搜歌名定位 BV：用户输入曲名 → 返回 top 候选视频
+    （bvid/title/author/play/pubdate），前端展示供点选。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c",
+             "from app.services import bili_fetch_cli; bili_fetch_cli.main()",
+             "search", q],
+            cwd=backend_dir,
+            capture_output=True, text=True, timeout=40,
+        )
+        out = (res.stdout or "").strip()
+        if not out:
+            return []
+        obj = json.loads(out.splitlines()[-1])
+        items = obj.get("items") or []
+        return items[:limit]
+    except Exception:
+        return []
