@@ -163,6 +163,19 @@ def clear_cache() -> int:
     return n
 
 
+def cache_clear_prefix(prefix: str) -> int:
+    """删除 key 以指定前缀开头的缓存条目（如 "songs:"），返回删除数量。"""
+    with _LOCK:
+        c = _conn()
+        n = c.execute(
+            "SELECT COUNT(*) AS n FROM cache_entries WHERE key LIKE ?", (prefix + "%",)
+        ).fetchone()["n"]
+        c.execute("DELETE FROM cache_entries WHERE key LIKE ?", (prefix + "%",))
+        c.commit()
+    logger.info("cache cleared prefix=%s: %d entries", prefix, n)
+    return n
+
+
 def cache_size() -> int:
     with _LOCK:
         c = _conn()

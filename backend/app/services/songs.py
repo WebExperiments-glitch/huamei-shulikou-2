@@ -3,8 +3,15 @@ from __future__ import annotations
 import re
 import sqlite3
 
+import httpx
+import json
+import subprocess
+import sys
+import time
+
 from ..core import db
 from ..core import cache as cache_mod
+from ..core import config
 from . import rank as rank_svc
 
 BOARD_TABLES = {
@@ -806,3 +813,163 @@ def vocalist_stats(conn, limit: int = 50, offset: int = 0) -> dict:
     """歌姬聚合（返回带 total 的分页结果）。"""
     out = _aggregate_role(conn, "vocalists", ("url", "wiki_url"), 1)
     return {"total": len(out), "items": out[offset:offset + limit]}
+
+
+def _fetch_bili_view_subprocess(bvid: str) -> tuple[str, dict]:
+    """用独立子进程抓 B站 view 接口，绕过 uvicorn 常驻进程出口被 B站风控的问题。
+
+    子进程拥有与交互式 Bash 相同的出网出口，可稳定抓取（api.bilibili.com 对
+    uvicorn 进程的出口 IP 返回 -404/deleted 风控，对 Bash/子进程出口正常）。
+    返回 (code_str, data_dict)：code_str 为 B站返回的 code（"0" 表示成功）。
+    """
+    script = (
+        "import sys, json, httpx\n"
+        "bvid = sys.argv[1]\n"
+        "headers = {'Referer': 'https://www.bilibili.com/', 'User-Agent': 'Mozilla/5.0'}\n"
+        "try:\n"
+        "    r = httpx.get('https://api.bilibili.com/x/web-interface/view',\n"
+        "                 params={'bvid': bvid}, headers=headers, timeout=15)\n"
+        "    p = r.json()\n"
+        "    print(json.dumps({'code': p.get('code'), 'data': p.get('data')}))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'code': 'error', 'msg': str(e)}))\n"
+    )
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c", script, bvid],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = (res.stdout or "").strip()
+        if not out:
+            return "error", {}
+        line = out.splitlines()[-1]
+        obj = json.loads(line)
+        return str(obj.get("code")), obj.get("data") or {}
+    except Exception:
+        return "error", {}
+
+
+def resolve_bvid(raw: str) -> str | None:
+    """从 B站链接或纯 BV 号解析出 BV 号；支持 b23.tv 短链（跟随重定向取最终 URL）。"""
+    s = (raw or "").strip()
+    m = _BV_RE.search(s)
+    if m:
+        return m.group(0).upper()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        try:
+            resp = httpx.get(s, follow_redirects=True, timeout=12)
+            m2 = _BV_RE.search(str(resp.url))
+            if m2:
+                return m2.group(0).upper()
+        except Exception:
+            pass
+    return None
+
+
+def _lookup_local_board(bvid: str) -> tuple[str, int] | None:
+    """从本地周榜/传说曲/年榜各期表找该 bvid，返回 (title, pubtime) 或 None。
+
+    用于手动入库：已上榜但没收录池的歌曲（如刚发布的新一期）可直接借榜单信息
+    补全入库，零网络依赖、不受 B站对服务端出口的风控影响。
+    """
+    conn = db.connect_source()
+    try:
+        for prefix in ("official_", "legend_", "annual_"):
+            tables = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
+                    (f"{prefix}%",),
+                )
+            ]
+            for t in tables:
+                key = t[len(prefix):]
+                if not (len(key) == 8 and key.isdigit()):
+                    continue
+                row = conn.execute(
+                    f'SELECT title, pubtime FROM "{t}" WHERE LOWER(bvid)=LOWER(?)', (bvid,)
+                ).fetchone()
+                if row and row["title"]:
+                    return (row["title"], int(row["pubtime"] or 0))
+    finally:
+        conn.close()
+    return None
+
+
+def ingest_song(bvid: str) -> dict:
+    """手动入库：补全歌曲到 songs_all 收录池。
+
+    返回 {"ok": True, "song": <get_song 结果>, "updated": bool}，
+    或 {"ok": False, "status": <原因>, "bvid": bvid}（失败）。
+
+    数据来源优先级：
+      1) 本地已上榜歌曲（周榜/传说曲/年榜各期表）——零网络依赖，不受 B站对服务端
+         出口的风控影响，可补全「已上榜但没收录池」的歌曲（如刚发布的新一期）；
+      2) 兜底：B站在线 view 接口（独立子进程抓取，服务端出口被风控时可能失败）。
+    """
+    from . import crawler
+
+    bvid = (bvid or "").strip().upper()
+    if not _BV_RE.fullmatch(bvid):
+        raise ValueError("无效的 B站 BV 号")
+
+    title = None
+    pubtime = 0
+    # 1) 本地榜单表优先
+    found = _lookup_local_board(bvid)
+    if found:
+        title, pubtime = found
+    else:
+        # 2) 兜底：B站在线（子进程；服务端出口被风控时失败）
+        if not crawler._robots_allowed():
+            return {"ok": False, "status": "blocked", "bvid": bvid}
+        code, data = _fetch_bili_view_subprocess(bvid)
+        if code == "0":
+            title = data.get("title") or ""
+            pubtime = int(data.get("pubdate") or 0)
+        elif code in ("-404", "-400"):
+            return {"ok": False, "status": "deleted", "bvid": bvid}
+        else:
+            return {"ok": False, "status": "not_found", "bvid": bvid}
+
+    if not title:
+        return {"ok": False, "status": "not_found", "bvid": bvid}
+
+    # 投稿者（UP主）/ 歌姬：本地榜单与 B站接口均无完整字段，留空待后续补全
+    producers: list[dict] = []
+    vocalists: list[dict] = []
+
+    w = db.connect_write(config.SOURCE_DB)
+    try:
+        existing = w.execute(
+            "SELECT bvid FROM songs_all WHERE LOWER(bvid)=LOWER(?)", (bvid,)
+        ).fetchone()
+        prod_json = json.dumps(producers, ensure_ascii=False)
+        voc_json = json.dumps(vocalists, ensure_ascii=False)
+        if existing:
+            w.execute(
+                "UPDATE songs_all SET title=?, title_cn=?, pubtime=?, producers=?, vocalists=? "
+                "WHERE LOWER(bvid)=LOWER(?)",
+                (title, None, pubtime, prod_json, voc_json, bvid),
+            )
+        else:
+            w.execute(
+                "INSERT INTO songs_all (bvid, title, title_cn, pubtime, first_recorded_at, producers, vocalists) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (bvid, title, None, pubtime, None, prod_json, voc_json),
+            )
+        w.commit()
+    finally:
+        w.close()
+
+    # 失效 songs 相关缓存，使搜索/聚合立即包含新歌（metrics/board_stats/names 等）
+    try:
+        cache_mod.cache_clear_prefix("songs:")
+    except Exception:
+        pass
+
+    rconn = db.connect_source()
+    try:
+        song = get_song(rconn, bvid)
+    finally:
+        rconn.close()
+    return {"ok": True, "song": song, "updated": bool(existing)}

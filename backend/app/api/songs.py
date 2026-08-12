@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Body
 
 from ..core import db
 from ..services import boards as boards_svc
@@ -143,3 +143,19 @@ def formula_compare(
         return songs_svc.formula_compare(conn, bvid, board_type=board)
     finally:
         conn.close()
+
+
+@router.post("/ingest")
+def ingest_song_api(payload: dict = Body(...)):
+    """手动入库：提供 B站视频链接或 BV 号，从 B站抓取元数据写入收录池 songs_all。"""
+    raw = (payload.get("url") or payload.get("bvid") or "").strip()
+    bvid = songs_svc.resolve_bvid(raw)
+    if not bvid:
+        raise HTTPException(400, "请提供有效的 B站视频链接或 BV 号")
+    try:
+        result = songs_svc.ingest_song(bvid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not result.get("ok"):
+        raise HTTPException(502, f"抓取 B站信息失败（{result.get('status')}），请确认视频存在且未被风控")
+    return result["song"]

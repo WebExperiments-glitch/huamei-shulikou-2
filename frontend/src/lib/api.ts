@@ -173,6 +173,23 @@ export const api = {
   translate: (bvid: string, title: string, target: "en" | "zh") =>
     request<TranslateResult>(`/api/translate?bvid=${encodeURIComponent(bvid)}&title=${encodeURIComponent(title)}&target=${target}`),
   song: (bvid: string) => request<Song>(`/api/songs/${bvid}`),
+  // 手动入库：把 B站链接 / BV 号补全进收录池（已上榜的歌曲直接借榜单信息，零网络依赖）
+  ingestSong: async (input: string): Promise<Song> => {
+    const res = await fetch(`${BASE}/api/songs/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: input }),
+    })
+    if (!res.ok) {
+      let msg = `入库失败（${res.status}）`
+      try {
+        const j = await res.json()
+        if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)
+      } catch { /* 保留默认信息 */ }
+      throw new Error(msg)
+    }
+    return res.json() as Promise<Song>
+  },
   allHistory: async (bvid: string) => {
     const raw = await request<{ song: Song; histories: Record<string, any[]> }>(
       `/api/songs/${bvid}/all-history`,

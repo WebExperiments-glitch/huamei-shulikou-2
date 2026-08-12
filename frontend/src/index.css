@@ -102,6 +102,12 @@ a:hover { text-decoration: underline; }
   color: var(--text-faint); font-size: 12.5px; cursor: pointer; transition: border-color .15s;
 }
 .sidebar-search:hover { border-color: var(--accent-dim); color: var(--text-dim); }
+.sidebar-search.accent {
+  color: var(--accent); border-color: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+  font-weight: 600;
+}
+.sidebar-search.accent:hover { color: var(--accent); border-color: var(--accent); }
 .sidebar-search span { flex: 1; text-align: left; }
 .sidebar-search kbd {
   font-family: var(--mono); font-size: 10.5px; color: var(--text-dim);
@@ -478,6 +484,70 @@ th.num-th { text-align: right; }
   display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--border);
   font-size: 11.5px; color: var(--text-faint);
 }
+
+/* ---------- 手动入库弹窗 ---------- */
+.ingest-backdrop {
+  position: fixed; inset: 0; z-index: 120;
+  background: rgba(4, 8, 14, 0.62);
+  backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.ingest-dialog {
+  width: min(460px, 94vw);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: ingest-pop .16s ease-out;
+}
+@keyframes ingest-pop { from { transform: translateY(8px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+.ingest-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+}
+.ingest-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; color: var(--text); }
+.ingest-close {
+  display: inline-flex; padding: 6px; border-radius: 8px;
+  background: none; border: none; color: var(--text-faint); cursor: pointer;
+}
+.ingest-close:hover { background: var(--bg-hover); color: var(--text); }
+.ingest-body { padding: 16px; }
+.ingest-label { display: block; font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; }
+.ingest-input {
+  width: 100%; box-sizing: border-box; padding: 11px 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text); font-size: 13.5px; font-family: var(--mono); outline: none;
+}
+.ingest-input:focus { border-color: var(--accent); }
+.ingest-hint { margin: 8px 0 0; font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.ingest-error {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 10px;
+  padding: 9px 11px; border-radius: 9px;
+  background: color-mix(in srgb, #ff5d5d 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ff5d5d 35%, transparent);
+  color: #ff8a8a; font-size: 12.5px; line-height: 1.4;
+}
+.ingest-actions { display: flex; gap: 10px; margin-top: 16px; }
+.btn-primary, .btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px 16px; border-radius: 9px; font-size: 13.5px; cursor: pointer;
+  border: 1px solid transparent; font-weight: 600;
+}
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+.btn-ghost { background: var(--bg-card); color: var(--text-dim); border-color: var(--border); }
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
+.btn-ghost:disabled { opacity: .6; cursor: not-allowed; }
+.ingest-success { display: flex; align-items: flex-start; gap: 11px; }
+.ingest-success > svg { color: #36d399; flex: none; margin-top: 2px; }
+.ingest-success-title { font-weight: 700; font-size: 14px; color: var(--text); }
+.ingest-success-sub { font-size: 13px; color: var(--text-dim); margin-top: 2px; word-break: break-all; }
+.ingest-success-bv { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+.spin { animation: ingest-spin 1s linear infinite; }
+@keyframes ingest-spin { to { transform: rotate(360deg); } }
 
 /* ---------- 浅色主题（赛博浅色） ---------- */
 [data-theme="light"] {

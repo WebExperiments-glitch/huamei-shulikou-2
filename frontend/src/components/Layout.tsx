@@ -3,12 +3,13 @@ import { NavLink, Outlet, useLocation } from "react-router-dom"
 import {
   LayoutDashboard, Trophy, Crown, CalendarDays, Sun, Clock, Flame, Mic2, Activity,
   Search, GitCompareArrows, BarChart3, Moon, Sigma, Music2, Heart, Menu, X, Star, Bot,
-  Download, TrendingUp,
+  Download, TrendingUp, Database,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import CommandPalette from "./CommandPalette"
 import RefreshButton from "./RefreshButton"
 import ErrorBoundary from "./ErrorBoundary"
+import ManualIngest from "./ManualIngest"
 import { useTheme } from "../lib/theme"
 
 interface NavItem { label: string; to: string; icon: LucideIcon }
@@ -48,6 +49,7 @@ const nav: (NavItem | NavGroup)[] = [
 export default function Layout() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [ingestOpen, setIngestOpen] = useState(false)
   const { theme, toggle } = useTheme()
   const location = useLocation()
 
@@ -113,6 +115,10 @@ export default function Layout() {
           <span>{theme === "dark" ? "浅色模式" : "深色模式"}</span>
         </button>
         <RefreshButton />
+        <button className="sidebar-search accent" onClick={() => setIngestOpen(true)}>
+          <Database size={13} />
+          <span>手动入库</span>
+        </button>
         {nav.map((item, i) =>
           "group" in item ? (
             <div className="nav-group" key={i}>{item.group}</div>
@@ -154,6 +160,7 @@ export default function Layout() {
         </ErrorBoundary>
       </main>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <ManualIngest open={ingestOpen} onClose={() => setIngestOpen(false)} />
     </div>
   )
 }
