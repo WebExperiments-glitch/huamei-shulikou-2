@@ -17,7 +17,7 @@ def search_songs(
     vocalist: str | None = None,
     limit: int = Query(50, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    sort: str = Query("id", description="id|pubtime|weeks|best_rank|view|favorite|coin|like|score"),
+    sort: str = Query("pubtime", description="id|pubtime|weeks|best_rank|view|favorite|coin|like|score"),
     order: str = Query("desc", description="asc|desc"),
     board: str | None = Query(None, description="weekly|legend|annual 上榜筛选"),
     min_weeks: int = Query(0, ge=0, description="上榜周数下限"),
@@ -89,7 +89,11 @@ def search_bilibili_api(
     q: str = Query("", description="曲名/关键词，用于在 B站 搜索定位 BV"),
     limit: int = Query(10, ge=1, le=20),
 ):
-    """在 B站 搜索视频（WBI 签名），让「公式实验室」支持粘贴曲名定位 BV。"""
+    """在 B站 搜索视频（WBI 签名），让「公式实验室」支持粘贴曲名定位 BV。
+
+    必须声明在 /{bvid} 之前：否则会被该带正则的路由拦截（search-bilibili 不满足
+    ^BV[0-9A-Za-z]+$）而返回 422。
+    """
     if not q.strip():
         return {"items": []}
     items = songs_svc.search_bilibili(q.strip(), limit=limit)
@@ -203,18 +207,6 @@ def auto_score(
         }
     finally:
         conn.close()
-
-
-@router.get("/search-bilibili")
-def search_bilibili_api(
-    q: str = Query("", description="曲名/关键词，用于在 B站 搜索定位 BV"),
-    limit: int = Query(10, ge=1, le=20),
-):
-    """在 B站 搜索视频（WBI 签名），让「公式实验室」支持粘贴曲名定位 BV。"""
-    if not q.strip():
-        return {"items": []}
-    items = songs_svc.search_bilibili(q.strip(), limit=limit)
-    return {"items": items}
 
 
 @router.post("/ingest")

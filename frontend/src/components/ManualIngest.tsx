@@ -53,8 +53,8 @@ export default function ManualIngest({ open, onClose }: Props) {
         bvid: song.bvid,
         title: song.title_cn || song.title || song.bvid,
       })
-    } catch (e: any) {
-      setError(e?.message || "入库失败，请稍后重试")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "入库失败，请稍后重试")
     } finally {
       setLoading(false)
     }

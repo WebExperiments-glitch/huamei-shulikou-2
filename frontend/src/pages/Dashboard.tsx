@@ -1,13 +1,41 @@
+import type { CSSProperties } from "react"
 import { Link } from "react-router-dom"
-import { useMemo } from "react"
+import { useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { Card } from "antd"
 import { api } from "../lib/api"
 import { Empty, Spinner } from "../components/ui"
 import { RankTable } from "../components/RankTable"
 import { ChartCard } from "../components/ChartCard"
+import { PageHeader } from "../components/PageHeader"
+import { SpotlightCard, AuroraBackground } from "../components/fx/aceternity"
+import { LiquidGlass } from "../components/fx/liquid-glass"
+import { lensBleed } from "../lib/liquidGlass"
+import { useFx } from "../lib/effects"
 import { useTheme, getChartPalette } from "../lib/theme"
+import { Reveal, StaggerGroup, StaggerItem } from "../lib/motion"
+import { AnimatedNumber, TiltCard, TypewriterText } from "../lib/fx"
+
+/** 带数字滚动动画的统计块（AnimatedNumber 驱动） */
+function CountStatistic({ value, suffix, valueStyle }: {
+  value: number
+  suffix?: string
+  valueStyle?: CSSProperties
+}) {
+  return (
+    <div style={valueStyle}>
+      <AnimatedNumber value={value} />
+      {suffix && <small style={{ fontSize: 13, fontWeight: 500, color: "var(--text-dim)", marginLeft: 4 }}>{suffix}</small>}
+    </div>
+  )
+}
+
+// 液态玻璃镜像层出血（与 strength=36 对应），镜像需再外扩 8px 覆盖极光的 -inset-8
+const AURORA_BLEED = lensBleed(36)
 
 export default function Dashboard() {
+  const auroraWrapRef = useRef<HTMLDivElement>(null)
+  const liquidOn = useFx("liquidGlass")
   const { data, isLoading, error } = useQuery({
     queryKey: ["boards"],
     queryFn: api.boards,
@@ -47,46 +75,79 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">VOCALOID CHART · huamei术力口</div>
-          <h1>总览</h1>
-        </div>
-      </div>
+      <PageHeader
+        crumb="VOCALOID CHART · huamei术力口"
+        title={<TypewriterText text="总览" />}
+        live
+        extra={`最新期次 ${boards[0]?.latest?.issue ?? "—"}`}
+      />
 
-      <div className="stat-row" style={{ marginBottom: 20 }}>
-        {boards.map((b) => (
-          <Link to={b.type === "weekly" ? "/board/weekly" : b.type === "legend" ? "/board/legend" : "/board/annual"} key={b.type} style={{ textDecoration: "none", color: "inherit" }}>
-            <div className="stat" style={{ cursor: "pointer" }}>
-              <div className="k">{b.label}</div>
-              <div className="v">
-                {b.issue_count}
-                <small>期</small>
-              </div>
-              <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginTop: 6 }}>
-                最新 {b.latest?.issue ?? "—"} · {b.latest?.date ?? ""}
-              </div>
+      {/* 统计卡背后垫一层极光（glassBg 门控，关闭后无背景光斑）；
+          整行套液态玻璃：镜像层复刻极光并相位同步，边缘真实折射 */}
+      <div className="relative" ref={auroraWrapRef}>
+        <AuroraBackground className="-inset-8 -z-10" />
+        <LiquidGlass
+          className="relative"
+          radius={16}
+          strength={36}
+          enabled={liquidOn}
+          syncFrom={auroraWrapRef}
+          backdrop={
+            <div
+              style={{
+                position: "absolute",
+                left: AURORA_BLEED - 8, top: AURORA_BLEED - 8,
+                right: AURORA_BLEED - 8, bottom: AURORA_BLEED - 8,
+              }}
+            >
+              <AuroraBackground className="-inset-8" />
             </div>
-          </Link>
+          }
+        >
+        <StaggerGroup className="stat-row" stagger={0.07} style={{ marginBottom: 20, position: "relative", zIndex: 2 }}>
+        {boards.map((b) => (
+          <StaggerItem key={b.type}>
+            <Link to={b.type === "weekly" ? "/board/weekly" : b.type === "legend" ? "/board/legend" : "/board/annual"} style={{ textDecoration: "none", color: "inherit" }}>
+              <TiltCard>
+                <SpotlightCard className="p-4 bg-card/55">
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 6 }}>{b.label}</div>
+                  <CountStatistic value={b.issue_count} suffix="期" valueStyle={{ fontSize: 24, fontWeight: 700, color: "var(--text)" }} />
+                  <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 8 }}>
+                    最新 {b.latest?.issue ?? "—"} · {b.latest?.date ?? ""}
+                  </div>
+                </SpotlightCard>
+              </TiltCard>
+            </Link>
+          </StaggerItem>
         ))}
-        <Link to="/monthly" style={{ textDecoration: "none", color: "inherit" }}>
-          <div className="stat">
-            <div className="k">月榜（聚合）</div>
-            <div className="v">27<small>个月</small></div>
-            <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 6 }}>周榜按自然月聚合</div>
-          </div>
-        </Link>
+        <StaggerItem>
+          <Link to="/monthly" style={{ textDecoration: "none", color: "inherit" }}>
+            <TiltCard>
+              <SpotlightCard className="p-4 bg-card/55" spotlightColor="rgba(194, 24, 140, 0.13)">
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 6 }}>月榜（聚合）</div>
+                <CountStatistic value={27} suffix="个月" valueStyle={{ fontSize: 24, fontWeight: 700, color: "var(--text)" }} />
+                <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 8 }}>周榜按自然月聚合</div>
+              </SpotlightCard>
+            </TiltCard>
+          </Link>
+        </StaggerItem>
+        </StaggerGroup>
+        </LiquidGlass>
       </div>
 
-      {trendOpt && (
-        <ChartCard
-          title="周榜规模趋势"
-          option={trendOpt}
-          filename="dashboard-weekly-trend"
-          badge={`${weeklyQ.data?.issues.length ?? 0} 期`}
-        />
-      )}
-      <LatestBoard type="weekly" title="最新·周榜 Top 20" to="/board/weekly" />
+      <Reveal>
+        {trendOpt && (
+          <ChartCard
+            title="周榜规模趋势"
+            option={trendOpt}
+            filename="dashboard-weekly-trend"
+            badge={`${weeklyQ.data?.issues.length ?? 0} 期`}
+          />
+        )}
+      </Reveal>
+      <Reveal delay={0.08}>
+        <LatestBoard type="weekly" title="最新·周榜 Top 20" to="/board/weekly" />
+      </Reveal>
     </>
   )
 }
@@ -103,12 +164,16 @@ function LatestBoard({ type, title, to }: { type: string; title: string; to: str
   })
 
   return (
-    <div className="card">
-      <div className="card-title">
-        {title}
-        <Link to={to} style={{ marginLeft: "auto", fontSize: 12.5 }}>查看全部 →</Link>
-      </div>
+    <Card
+      title={
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+          <span>{title}</span>
+          <Link to={to} style={{ fontSize: 12.5 }}>查看全部 →</Link>
+        </div>
+      }
+      styles={{ body: { paddingTop: 8 } }}
+    >
       {isLoading ? <Spinner /> : data ? <RankTable items={data.items} showStats /> : <Empty />}
-    </div>
+    </Card>
   )
 }

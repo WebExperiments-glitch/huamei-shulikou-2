@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { RefreshCw, Loader2, CheckCircle2, XCircle, X } from "lucide-react"
 import { api } from "../lib/api"
+import { useToast } from "../lib/toast"
 
 interface SyncSummary {
   all_up_to_date: boolean
@@ -25,20 +26,31 @@ export default function RefreshButton() {
   const [running, setRunning] = useState(false)
   const [errMsg, setErrMsg] = useState<string | null>(null)
   const timerRef = useRef<number | null>(null)
+  const wasRunningRef = useRef(false)
+  const toast = useToast().toast
 
   const poll = useCallback(async () => {
     try {
       const s = (await api.syncStatus()) as SyncStatus
       setStatus(s)
-      if (!s.running && timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-        setRunning(false)
+      if (!s.running) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current)
+          timerRef.current = null
+          setRunning(false)
+        }
+        // 仅在「正在同步 → 结束」的状态跳变时轻提示，避免重复弹
+        if (wasRunningRef.current) {
+          wasRunningRef.current = false
+          toast(s.error ? "数据同步出错" : "数据同步完成", s.error ? "error" : "success")
+        }
+      } else {
+        wasRunningRef.current = true
       }
     } catch {
       /* 轮询瞬错忽略 */
     }
-  }, [])
+  }, [toast])
 
   const start = useCallback(async () => {
     setOpen(true)
@@ -46,16 +58,18 @@ export default function RefreshButton() {
     setStatus(null)
     try {
       await api.syncRefresh()
-    } catch (e: any) {
-      const msg = String(e?.message ?? e)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
       setErrMsg(msg.includes("409") ? "已有同步任务正在进行中" : "触发同步失败：" + msg)
+      toast(msg.includes("409") ? "已有同步任务正在进行中" : "触发同步失败", "error")
       return
     }
     setRunning(true)
+    toast("已开始从 biliboard 同步数据", "info")
     poll()
     if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = window.setInterval(poll, 1500)
-  }, [poll])
+  }, [poll, toast])
 
   useEffect(
     () => () => {

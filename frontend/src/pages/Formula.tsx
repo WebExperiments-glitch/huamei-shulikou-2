@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { fmt } from "../components/ui"
+import { Reveal, StaggerGroup, StaggerItem } from "../lib/motion"
+import { PageHeader } from "../components/PageHeader"
 
 // 官方新公式 t 还原（2026-08-11 极限还原，与后端 services/rank.py 逐字一致、可核验）：
 //   老曲（投稿早于周期起点）→ t = 1
@@ -87,19 +89,22 @@ export default function Formula() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb"><Link to="/">总览</Link> · 公式与试算</div>
-          <h1>得分公式 · 透明与可核验</h1>
-          <p className="muted" style={{ maxWidth: 760 }}>
+      <Reveal>
+      <PageHeader
+        crumb={<><Link to="/">总览</Link> · 公式与试算</>}
+        title="得分公式 · 透明与可核验"
+        desc={
+          <>
             本项目的核心理念是 <b>全量自采 + 公式透明 + API 可核验</b>。下方完整公开 B 站术力口周榜的计分公式，
             并提供一个交互试算器——你可以填入任意一期任意歌曲的增量，按文档公式精确复算得分，验证每一个数字。
-          </p>
-        </div>
-      </div>
+          </>
+        }
+      />
+      </Reveal>
 
       {/* 公式定义 */}
-      <div className="grid-2">
+      <StaggerGroup className="grid-2">
+        <StaggerItem key="current">
         <div className="card">
           <div className="card-title">现行公式（第 54 期起，≥2025-06-24）</div>
           <div className="formula-box">
@@ -115,7 +120,9 @@ export default function Formula() {
             <div className="wr"><span>Δ硬币</span><b>× 30</b></div>
           </div>
         </div>
+        </StaggerItem>
 
+        <StaggerItem key="old">
         <div className="card">
           <div className="card-title">旧公式（第 54 期前，&lt;54）</div>
           <div className="formula-box">
@@ -129,9 +136,11 @@ export default function Formula() {
             本项目已用官方 112 期数据对拍验证过两代公式的边界与权重。
           </div>
         </div>
-      </div>
+        </StaggerItem>
+      </StaggerGroup>
 
       {/* 试算器 */}
+      <Reveal delay={0.06}>
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-title">交互试算器 <span className="badge">填入增量即可复算</span></div>
         <div className="calc-grid">
@@ -215,8 +224,10 @@ export default function Formula() {
           <div className="comp-note">各因子对复算得分的绝对贡献（非百分比），直观看出分数主要来源。</div>
         </div>
       </div>
+      </Reveal>
 
       {/* 数据口径说明 */}
+      <Reveal delay={0.12}>
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-title">数据口径与「可核验」说明</div>
         <ul className="doc-list">
@@ -227,6 +238,7 @@ export default function Formula() {
           <li>单曲详情页的「得分与公式」卡片给出每期的<b>官方得分、原始指标与时间修正 t</b>，并以「因子构成参考」展示分数来源（明确标注非复算）。</li>
         </ul>
       </div>
+      </Reveal>
     </>
   )
 }

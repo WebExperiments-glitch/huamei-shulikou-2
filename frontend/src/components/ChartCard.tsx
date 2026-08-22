@@ -1,17 +1,13 @@
-import * as echarts from "echarts/core"
-import { BarChart, LineChart } from "echarts/charts"
-import { GridComponent, TooltipComponent, LegendComponent, TitleComponent, DataZoomComponent } from "echarts/components"
-import { CanvasRenderer } from "echarts/renderers"
 import type { EChartsCoreOption } from "echarts/core"
 import { useEChart } from "../hooks/useEChart"
 import { ChartExport } from "./ChartExport"
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
+import { Badge } from "./ui/badge"
 
-echarts.use([
-  BarChart, LineChart, GridComponent, TooltipComponent,
-  LegendComponent, TitleComponent, DataZoomComponent, CanvasRenderer,
-])
-
-/** 通用图表卡片：内嵌 ECharts 实例 + PNG 导出按钮。option 由调用方按主题着色后传入。 */
+/**
+ * 通用图表卡片：shadcn Card 容器 + 内嵌 ECharts 实例 + PNG 导出按钮。
+ * option 由调用方按主题着色后传入（token 桥接后自动跟随明暗主题）。
+ */
 export function ChartCard({
   title, option, filename, height = 320, badge,
 }: {
@@ -23,13 +19,17 @@ export function ChartCard({
 }) {
   const { setRef, getDataURL } = useEChart(option)
   return (
-    <div className="card">
-      <div className="card-title">
-        {title}
-        {badge && <span className="badge">{badge}</span>}
+    <Card className="gap-3 py-4 transition-shadow duration-300 hover:shadow-md">
+      <CardHeader className="flex-row items-center justify-between gap-2 px-4">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <CardTitle className="truncate text-[14px]">{title}</CardTitle>
+          {badge && <Badge variant="secondary" className="shrink-0 text-[10.5px]">{badge}</Badge>}
+        </div>
         <ChartExport getURL={getDataURL} filename={filename} />
-      </div>
-      <div ref={setRef} className="chart" style={{ height }} />
-    </div>
+      </CardHeader>
+      <CardContent className="px-4">
+        <div ref={setRef} className="chart" style={{ height }} />
+      </CardContent>
+    </Card>
   )
 }

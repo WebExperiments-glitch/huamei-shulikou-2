@@ -97,25 +97,58 @@ def cross_check_issue(conn, board_type: str, issue_key: str,
     返回 {checked, mismatches, mismatch_rate, max_rel, warn, sample[]}。
     """
     from . import boards as boards_svc
-    from .rank import DEFAULT_WEIGHTS, OLD_WEIGHTS, NEW_FORMULA_FROM_ISSUE, time_correction, time_correction_old
+    from .rank import (
+        CONTINUOUS_CURRENT_FROM_ISSUE,
+        CONTINUOUS_EARLY_WEIGHTS,
+        CONTINUOUS_FORMULA_FROM_ISSUE,
+        DEFAULT_WEIGHTS,
+        MID_WEIGHTS,
+        NEW_FORMULA_FROM_ISSUE,
+        OLD_WEIGHTS,
+        time_correction,
+        time_correction_mid,
+        time_correction_old,
+    )
 
     table = boards_svc._table_name(board_type, issue_key)
     # 注意：传入的 conn 通常为裸 sqlite3 连接（无 Row factory），按元组索引访问。
+    # 旧版 legend/annual 表为复数列名（views/favorites/coins/likes）且无 issue_id，
+    # 新版（sync_official 统一 schema）为单数列名+issue_id——必须按实际列动态拼 SELECT，
+    # 否则 no such column 会让传说/年榜的交叉核验「第三道防线」整段被 except 吞掉、从不生效。
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    vc = "view" if "view" in cols else "views"
+    fc = "favorite" if "favorite" in cols else "favorites"
+    cc = "coin" if "coin" in cols else "coins"
+    lc = "like" if "like" in cols else "likes"
+    iid_expr = "issue_id" if "issue_id" in cols else "NULL"
     # SELECT 顺序：rank, bvid, view, favorite, coin, like, score, pubtime, issue_id
     rows = conn.execute(
-        f'SELECT rank, bvid, view, favorite, coin, like, score, pubtime, issue_id '
+        f'SELECT rank, bvid, {vc}, {fc}, {cc}, {lc}, score, pubtime, {iid_expr} '
         f'FROM "{table}"'
     ).fetchall()
     if not rows:
         return {"checked": 0, "warn": False, "note": "空表"}
 
-    # 公式版本判定（与 boards.get_issue_rankings 一致）
-    is_old = formula_version == "old"
-    if formula_version is None and board_type == "weekly":
+    # 公式代判定：与 boards._recalc 的「四代」口径严格对齐，避免 54-102/103-110 期
+    # 误用其它代的权重/锚点而系统性误报。
+    #   <54     远古：2·Δview·t + 30Δfav + 3Δlike + 10Δcoin，锚=结算日
+    #   54-102  中间：Δview·t + 30Δfav + 3Δlike + 10Δcoin，锚=周期起点(结算日−7d)
+    #   103-110 现行早期：Δview·t + 30Δfav + 3Δlike + 15Δcoin，锚=周期起点
+    #   111+    现行：Δview·t + 15Δfav + 3Δlike + 30Δcoin，锚=周期起点
+    iid = None
+    if formula_version is None:
         iid = next((r[8] for r in rows if r[8] is not None), None)
-        is_old = (iid is not None and iid < NEW_FORMULA_FROM_ISSUE)
-    w = OLD_WEIGHTS if is_old else DEFAULT_WEIGHTS
-    anchor = boards_svc._settle_ts(issue_key) - (0 if is_old else 7 * 86400)
+    if board_type != "weekly":
+        # legend/annual 无 issue_id 或均晚于新公式时代，一律现行公式
+        iid = None
+    if formula_version == "old" or (iid is not None and iid < NEW_FORMULA_FROM_ISSUE):
+        w, anchor, era = OLD_WEIGHTS, boards_svc._settle_ts(issue_key), "old"
+    elif iid is not None and iid < CONTINUOUS_FORMULA_FROM_ISSUE:
+        w, anchor, era = MID_WEIGHTS, boards_svc._settle_ts(issue_key) - 7 * 86400, "mid"
+    elif iid is not None and iid < CONTINUOUS_CURRENT_FROM_ISSUE:
+        w, anchor, era = CONTINUOUS_EARLY_WEIGHTS, boards_svc._settle_ts(issue_key) - 7 * 86400, "new"
+    else:
+        w, anchor, era = DEFAULT_WEIGHTS, boards_svc._settle_ts(issue_key) - 7 * 86400, "new"
 
     mismatches = 0
     rels: list[float] = []
@@ -125,7 +158,13 @@ def cross_check_issue(conn, board_type: str, issue_key: str,
         view, fav, coin, like = r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0
         pub = r[7] or 0
         official = r[6] or 0
-        t = time_correction_old(int(pub), anchor) if is_old else time_correction(int(pub), anchor) if pub else (2.47 if is_old else 1.0)
+        # 各代对 pub 缺失行的兜底常数必须与 boards._recalc 一致
+        if era == "old":
+            t = time_correction_old(int(pub), anchor) if pub else 2.47
+        elif era == "mid":
+            t = time_correction_mid(int(pub), anchor) if pub else 1.0
+        else:
+            t = time_correction(int(pub), anchor) if pub else 1.0
         self_score = (view * w["view"] * t + fav * w["favorite"] + like * w["like"] + coin * w["coin"])
         if official > 0:
             rel = abs(self_score - official) / official

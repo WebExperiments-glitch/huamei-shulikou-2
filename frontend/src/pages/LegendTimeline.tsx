@@ -7,7 +7,9 @@ import { useTheme, getChartPalette } from "../lib/theme"
 import { fmtWan, pick } from "../lib/format"
 import { ChartCard } from "../components/ChartCard"
 import { SkeletonTable } from "../components/Skeleton"
+import { Reveal, StaggerGroup, StaggerItem } from "../lib/motion"
 import type { EChartsCoreOption } from "echarts/core"
+import { PageHeader } from "../components/PageHeader"
 
 const LEGEND = "legend"
 const MAX = 50
@@ -16,8 +18,8 @@ function issueToDate(issue: string): string {
   if (!issue || issue.length < 8) return issue
   return `${issue.slice(0, 4)}-${issue.slice(4, 6)}-${issue.slice(6, 8)}`
 }
-function viewOf(e: any) {
-  return pick(e, "view", "views") ?? 0
+function viewOf(e: unknown) {
+  return pick(e as Record<string, unknown>, "view", "views") ?? 0
 }
 
 export default function LegendTimeline() {
@@ -113,35 +115,41 @@ export default function LegendTimeline() {
 
   return (
     <div>
-      <div className="topbar">
-        <div>
-          <div className="crumb">榜单 / 传说曲晋升时间线</div>
-          <h1>传说曲晋升时间线</h1>
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader crumb="榜单 / 传说曲晋升时间线" title="传说曲晋升时间线" />
+      </Reveal>
 
       {loading ? (
+        <Reveal>
         <div className="card" style={{ padding: 20 }}><SkeletonTable rows={14} /></div>
+        </Reveal>
       ) : events.length === 0 ? (
         <div className="empty">暂无可用于推算晋升时间的传说曲榜历史</div>
       ) : (
         <>
-          <div className="stat-row" style={{ marginBottom: 16 }}>
+          <StaggerGroup className="stat-row" style={{ marginBottom: 16 }}>
+            <StaggerItem>
             <div className="stat">
               <div className="k"><Crown size={13} /> 已追踪传说曲</div>
               <div className="v">{events.length}<small> 首</small></div>
               <div className="k" style={{ marginTop: 4 }}>取自传说曲周榜 Top {MAX}</div>
             </div>
+            </StaggerItem>
+            <StaggerItem>
             <div className="stat">
               <div className="k"><Sparkles size={13} /> 其中封神</div>
               <div className="v">{mythCount}<small> 首</small></div>
               <div className="k" style={{ marginTop: 4 }}>榜内播放跨过千万</div>
             </div>
+            </StaggerItem>
+            <StaggerItem>
             <div className="stat">
               <div className="k"><CalendarDays size={13} /> 最早晋升</div>
               <div className="v" style={{ fontSize: 16 }}>{events[0]?.date}</div>
               <div className="k" style={{ marginTop: 4 }}>{(events[0]?.title_cn || events[0]?.title) ?? ""}</div>
             </div>
+            </StaggerItem>
+            <StaggerItem>
             <div className="stat">
               <div className="k"><Flame size={13} /> 最快封神</div>
               <div className="v" style={{ fontSize: 16 }}>
@@ -149,10 +157,14 @@ export default function LegendTimeline() {
               </div>
               <div className="k" style={{ marginTop: 4 }}>传说→神话</div>
             </div>
-          </div>
+            </StaggerItem>
+          </StaggerGroup>
 
+          <Reveal delay={0.06}>
           <ChartCard title="历年晋升传说曲数量" option={yearOpt} filename="legend-timeline-year" height={320} badge="按晋升年份" />
+          </Reveal>
 
+          <Reveal delay={0.12}>
           <div className="card" style={{ marginTop: 16 }}>
             <div className="card-title"><Trophy size={14} /> 晋升里程碑（按时间）</div>
             <div className="timeline">
@@ -192,6 +204,7 @@ export default function LegendTimeline() {
               ))}
             </div>
           </div>
+          </Reveal>
         </>
       )}
     </div>

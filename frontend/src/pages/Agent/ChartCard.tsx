@@ -1,16 +1,18 @@
 import { useEffect, useRef } from "react"
+import type { ECharts } from "echarts/core"
 import type { ChartSpec } from "../../lib/conversations"
 
 export function ChartCard({ spec }: { spec: ChartSpec }) {
   const ref = useRef<HTMLDivElement>(null)
+  const opt = spec.option as { series?: Array<{ type?: string }> }
   const tall =
-    Array.isArray((spec.option as any)?.series)
-      ? (spec.option as any).series.some((s: any) =>
-          ["graph", "tree", "treemap", "sankey", "heatmap", "scatter", "radar"].includes(s?.type)
+    Array.isArray(opt.series)
+      ? opt.series.some((s) =>
+          ["graph", "tree", "treemap", "sankey", "heatmap", "scatter", "radar"].includes(s?.type ?? "")
         )
       : false
   useEffect(() => {
-    let chart: any
+    let chart: ECharts
     let disposed = false
     import("echarts")
       .then((echarts) => {

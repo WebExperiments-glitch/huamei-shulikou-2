@@ -1,5 +1,61 @@
 # 更新日志
 
+## V0.2.0.1 RC 1 — 2026-08-22（新一代界面 + 液态玻璃 + AI 伴侣 + 架构重构）
+
+自 V0.13 lite 起重写前端视觉与新架构，正式定名 **V0.2.0.1 RC 1**（候选发布版）。对比上一版新增大量模块，视觉、动效、AI 能力与工程稳定性全面升级。
+
+### 液态玻璃与新一代视觉系统（Liquid Glass）
+- 引入 **液态玻璃（Liquid Glass）** 视觉体系：`liquid-glass` 组件 + `lib/liquidGlass` 引擎，卡片/面板沿用毛玻璃+流动折射高光，遵守系统 `prefers-reduced-motion`
+- 全局动效层重构（`Effects` / `lib/fx`）：滚动进度条、卡片聚光灯、动画组件集（数字滚动 / 打字机 / 文字流光 / 3D 倾斜 / 点击涟漪 / 排名徽标 / 粒子），借鉴 React Bits / Magic UI / Aceternity 自研适配
+- **特效设置面板**（SettingsPanel）：总开关 + 动画密度 + 分类开关，`localStorage` 持久化
+- 系统主题浅色/深色切换，动效与 CSS 变量统一经 `data-fx*` 门控，自动适配明暗
+
+### WebGPU 粒子背景（GPU 加速）
+- 新增 `WaveTerrain`（compute shader 波动地形 + 粒子星云），支持 WebGPU 时 GPU 渲染，回退 Canvas2D；遵循减弱动效偏好
+- 音乐可视化（VisualizerModal）：基于 Three.js / R3F，`AnalyserNode` 频谱驱动
+
+### AI 能力（借鉴 DSH 思路）
+- 引入 **Airi AI 伴侣**（/airi 模块）：3D 角色场景（Three.js + VRM）、对话区、情绪球，随应用加载
+- AI 智能体增强：待办清单 + 进度条、目标轮次预算控制、结构化错误码、工具调用 + 联网搜索
+- DeepSeek 接入：`thinking` / `reasoning_effort` / 缓存命中面向省钱优化
+
+### 工程与架构
+- 前端 API 层按功能拆分领域模块，统一错误处理（结构化 `ApiError` + `X-Request-ID` 前后端关联）
+- 后端日志系统（console + 文件轮转）与请求中间件（request-id / access log / 全局异常 / 安全头 / 请求体限制）
+- 启动钩子迁移至 FastAPI `lifespan`（弃用 `@app.on_event`）
+- 测试：前端 vitest、后端 36 项 pytest 全绿；`tsc -b` 零错误、`npm run build` 通过
+- 前端性能：AI 伴侣/3D 依赖懒加载，首屏主 bundle 体积显著下降
+- 修复：自建核验列 `self_score` 中 like/coin 权重顺序颠倒的数据正确性 BUG
+
+---
+
+## 0.13 lite — 2026-08-15（AI 增强 + 全局动效 + 架构重构）
+
+基于 0.1.2 的轻量迭代版（lite），聚焦 AI 智能体能力增强、全局动效系统与工程健壮性。
+
+### AI 智能体增强（借鉴 DSH 思路）
+- **待办清单 + 进度条**：后端新增 `todo_write` 工具，经事件流实时推送任务快照；前端 Agent 渲染待办列表、完成数、进度条与运行状态，会话内无缝刷新
+- **目标轮次预算控制**：`run_agent` 支持 `max_rounds` 钳制，运行期间经 `goal` 事件实时上报进度，预算耗尽以 `goal_exhausted` 优雅停止；前端展示目标预算进度条（颜色渐变）与耗尽徽标
+- **结构化错误码**：后端定义 `AgentErrCode` 枚举，工具调用失败以 `tool_error` 事件带码返回；前端工具卡片高亮错误码与错误消息，便于快速定位
+
+### 全局动效与特效系统
+- 新增动画组件（借鉴 React Bits / Magic UI 源码自研适配）：数字滚动 `AnimatedNumber`、打字机 `TypewriterText`、文字流光 `ShimmerText`、3D 倾斜卡片 `TiltCard`、点击涟漪 `RippleButton`、排名徽标 `RankBadge`、粒子背景 `ParticlesBg`
+- 新增**特效设置**入口（汉堡菜单「我的」→ 特效设置）：总开关 + 动画密度（低/中/高）+ 分类开关，`localStorage` 持久化，CSS 经 `data-fx*` 属性门控，尊重 `prefers-reduced-motion`
+- 动画覆盖核心页面并推广至更多页面：导出中心、网易云详情、AI 智能体、实时热度数据卡等
+- 修复：特效 CSS 门控属性名不匹配、`RankBadge` 新上榜误判、antd Drawer `width` 弃用警告
+
+### 公式还原与分段生成
+- 公式分段生成逻辑修正：`CONTINUOUS_FORMULA_FROM_ISSUE=98`，移除过渡公式常量，按期数自动选择现行（≥108）/ 过渡（100–107）/ 中期（54–99）公式
+- 现行公式起始期次校正（103 → 108）
+- 验证：后端 25 项 pytest 通过；6 条离群数据无法匹配（已记录在案）；中期公式（54–97）暂缺样本数据
+
+### 工程与架构
+- 前端 API 层拆分 9 个领域模块，统一错误处理（结构化 `ApiError` + `X-Request-ID` 前后端关联），补全类型契约（`types.ts`）
+- 后端新增日志系统（console + 文件轮转，5MB × 10 份）与请求中间件（request-id / access log / 全局异常处理）
+- 测试：前端 26 项 vitest、后端 25 项 pytest 全绿；`tsc -b` 零错误、`npm run build` 通过
+
+---
+
 ## 0.1.1 — 2026-08-11（公式还原：t 函数）
 
 基于 0.1.0 正式版，对榜单核心公式的时间修正系数 `t` 做二次测算与**真正还原**（用户复核「公式透明」文案准确性后触发）。

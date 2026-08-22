@@ -45,7 +45,8 @@ def _rate_limit(request: Request):
 AI_CACHE_TTL = int(os.environ.get("AI_CACHE_TTL", "600"))
 
 
-def _stream_cached(messages: list[dict], key_raw: str, max_tokens: int, temperature: float):
+def _stream_cached(messages: list[dict], key_raw: str, max_tokens: int, temperature: float,
+                   thinking: bool | None = None):
     """带缓存的流式包装。
 
     - 命中：先发 {"type":"cache","hit":True} 事件，再回放缓存中的事件序列（秒回）。
@@ -53,11 +54,12 @@ def _stream_cached(messages: list[dict], key_raw: str, max_tokens: int, temperat
 
     key_raw 由「稳定字段」组成（如 bvid + 对话历史 + 参数），刻意不含实时互动数据；
     这样同一曲、同一追问（或重开分析），即使两次抓取到的实时数字有微小漂移，也能稳定命中缓存。
+    thinking 也会进入缓存 key：开/关思考的产物（是否含 reasoning）不同，避免串用。
     """
     if AI_CACHE_TTL <= 0:
-        yield from ai_service.stream_chat(messages, max_tokens, temperature)
+        yield from ai_service.stream_chat(messages, max_tokens, temperature, thinking)
         return
-    key = "ai-stream|" + hashlib.md5(key_raw.encode("utf-8")).hexdigest()
+    key = "ai-stream|" + hashlib.md5((key_raw + f"|think:{thinking}").encode("utf-8")).hexdigest()
     hit, events = cache_get_json(key)
     if hit and events:
         yield {"type": "cache", "hit": True}
@@ -65,7 +67,7 @@ def _stream_cached(messages: list[dict], key_raw: str, max_tokens: int, temperat
             yield ev
         return
     collected: list[dict] = []
-    for ev in ai_service.stream_chat(messages, max_tokens, temperature):
+    for ev in ai_service.stream_chat(messages, max_tokens, temperature, thinking):
         collected.append(ev)
         yield ev
     if collected and collected[-1].get("type") == "done":
@@ -77,6 +79,7 @@ class StreamReq(BaseModel):
     prompt: str
     max_tokens: int = 1024
     temperature: float = 0.6
+    thinking: bool | None = None  # None=跟随 env 默认；True 开思考；False 关思考（省钱）
 
 
 class SongStreamReq(BaseModel):
@@ -87,6 +90,14 @@ class SongStreamReq(BaseModel):
     history: list[dict] = []
     max_tokens: int = 2560
     temperature: float = 0.6
+    thinking: bool | None = None
+
+
+class AgentGoal(BaseModel):
+    """目标圆次预算（借鉴 dsh goal 的 maxGoalRounds）：限制工具调用轮次防失控。
+    max_rounds 到达后仍未给出结论，后端发 goal_exhausted 并停止继续调工具。"""
+    objective: str = ""  # 目标描述（仅展示用）
+    max_rounds: int = 3  # 工具调用圆次上限（1~8，内部再钳制到 max_steps）
 
 
 class AgentReq(BaseModel):
@@ -95,6 +106,8 @@ class AgentReq(BaseModel):
     messages: list[dict] = []
     max_steps: int = 6  # 工具循环最大步数（1~8）
     approved: list[dict] = []  # 用户已确认的危险操作 [{name, arguments}]，用于二次执行
+    thinking: bool | None = None  # None=跟随 env 默认；True 开思考；False 关思考（省钱）
+    goal: AgentGoal | None = None  # 目标圆次预算；设置后以 min(max_rounds, max_steps) 为循环上限
 
 
 class SwitchReq(BaseModel):
@@ -125,7 +138,7 @@ def stream(req: StreamReq):
     )
 
     def gen():
-        for ev in _stream_cached(messages, key_raw, req.max_tokens, req.temperature):
+        for ev in _stream_cached(messages, key_raw, req.max_tokens, req.temperature, req.thinking):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -161,7 +174,7 @@ def stream_song(req: SongStreamReq):
     )
 
     def gen():
-        for ev in _stream_cached(messages, key_raw, req.max_tokens, req.temperature):
+        for ev in _stream_cached(messages, key_raw, req.max_tokens, req.temperature, req.thinking):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -190,7 +203,22 @@ def agent(req: AgentReq):
     steps = max(1, min(int(req.max_steps), 8))
 
     def gen():
-        for ev in ai_service.run_agent(clean, max_steps=steps, approved=req.approved):
+        goal_payload = req.goal.model_dump() if req.goal else None
+        for ev in ai_service.run_agent(clean, max_steps=steps, approved=req.approved,
+                                       thinking=req.thinking, goal=goal_payload):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.post("/chat/completions")
+async def proxy_chat_completions(request: Request):
+    """OpenAI 兼容流式透传代理：供 AI 伴侣等前端直连受限的第三方端点经本后端中转，
+    绕开浏览器 CORS 拦截。文本/流式通用，上游 SSE 原样转发。
+    """
+    body = await request.body()
+
+    def gen():
+        yield from ai_service.openai_chat_completions_passthrough(body)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

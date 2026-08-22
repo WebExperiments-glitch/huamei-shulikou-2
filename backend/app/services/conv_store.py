@@ -8,12 +8,25 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
 
 from app.core import config, db
 
 
+@contextmanager
 def _conn():
-    return db.connect_write(config.AGENT_DB)
+    """可写连接上下文：正常退出提交、任何情况关闭。
+
+    不能用裸 `with sqlite3.Connection(...) as conn:` —— 它只 commit/rollback，
+    **不会 close**，每次调用都新建一个连接且依赖 GC 隐式回收；
+    高频保存会话（api/conversations.py 批量 upsert）会堆积未受管连接。
+    """
+    conn = db.connect_write(config.AGENT_DB)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def init() -> None:

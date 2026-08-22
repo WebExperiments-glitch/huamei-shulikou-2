@@ -49,6 +49,13 @@ SONGS_COLS = ["id", "bvid", "pubtime", "title", "title_cn",
               "first_recorded_at", "producers", "vocalists"]
 
 
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """判断本地是否已存在该榜单表。"""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
 def existing_issues(conn: sqlite3.Connection, prefix: str) -> set[int]:
     """已同步过的期号（以 issue_id 为准，跨表去重）。"""
     known: set[int] = set()
@@ -114,10 +121,15 @@ def sync_one(client: httpx.Client, conn: sqlite3.Connection, board_type: str,
     synced = 0
     for issue in issues[:max_lookback]:
         iid = issue.get("issue_id") or issue.get("id")
-        if not iid or iid in known:
+        if not iid:
             continue
         end_ts = issue.get("end_date") or 0
         date_key = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime("%Y%m%d")
+        # 增量判定：已按 issue_id 同步过，或本地已有对应日期表。
+        # 后者兜底 legend / 新式 annual 等无 issue_id 列的 legacy 表（existing_issues 读不到），
+        # 否则每次都会全量重下传说榜且 up_to_date 恒为 False。
+        if iid in known or _table_exists(conn, f"{prefix}{date_key}"):
+            continue
         try:
             board = get_json(client, f"{API}{RANKINGS_URI.format(bid=bid, iid=iid)}")
         except httpx.HTTPStatusError:
@@ -154,8 +166,13 @@ def sync_one(client: httpx.Client, conn: sqlite3.Connection, board_type: str,
             conn.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
             conn.commit()
         except sqlite3.Error as e:
+            # ⚠️ DROP 真表已被纳入当前未提交事务，若失败必须回滚否则后续 commit 会连带提交 DROP，
+            # 导致本该保留的原表被永久删除！只有先回滚才能保证原表还在。
+            conn.rollback()
             try:
+                # 回滚后 staging 肯定不存在（整个事务已撤销），无需再删；这里为了兜底避免孤立文件
                 conn.execute(f'DROP TABLE IF EXISTS "{staging}"')
+                conn.commit()
             except sqlite3.Error:
                 pass
             print(f"  [{board_type}] {date_key} 写入失败已回滚暂存: {e}")
@@ -178,17 +195,24 @@ def sync_one(client: httpx.Client, conn: sqlite3.Connection, board_type: str,
     }
 
 
-def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 200) -> dict:
+def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 100) -> dict:
     """拉取官方收录池（无二创全池）增量写入 songs_all。
 
-    先取远端总数与本地 songs_all 行数比对：本地已 ≥ 远端总数即视为最新，
-    直接跳过逐页抓取（避免每次刷新都翻 12000+ 首）。
+    修复过的三个坑（2026-08-21 数据停更事故复盘）：
+      1) 分页截断：官方 /songs 每页实际最多返回 100 条（请求 per_page=200 也只回 100），
+         旧逻辑 `len(items) < per_page` 会把第一页误判成最后一页 → 每次同步只处理
+         第一页就退出。现在 per_page 对齐 100，终止条件改为 items 为空 + 页数上限保险。
+      2) 行数跳过误判：官方下架歌曲时 total 会缩水，本地含历史残留行时 local_total
+         恒 >= remote_total → 新歌长期进不来。现在改为「第一页无新歌 且 行数也追平」
+         才跳过（第一页本来就是官方按收录时间降序的最新 100 首，零额外请求）。
+      3) 主键冲突丢行：本地 songs_all.id 历史上直接沿用官方 id（=rowid）。官方下架
+         重排后新歌 id 会与本地老行撞 PRIMARY KEY，被 INSERT OR IGNORE 静默丢弃，
+         缺口永远补不上。现在插入不再写官方 id，让 rowid 自增（id 与官方脱钩，
+         排序/关联均按 bvid，不受影响）。
     返回 {added, remote_total, local_total, up_to_date}。"""
-    try:
-        first = get_json(client, f"{API}{SONGS_URI}", per_page=1, page=1)
-        remote_total = first.get("total", 0) if isinstance(first, dict) else 0
-    except Exception:  # noqa: BLE001
-        remote_total = 0
+    # 插入列：刻意排除官方 id（见 docstring 第 3 点），避免与本地历史行主键冲突
+    insert_cols = [c for c in SONGS_COLS if c != "id"]
+
     # 确保收录池表存在（缺失则建表，避免后续查询/插入静默失败或全量跳过）
     conn.execute(f"CREATE TABLE IF NOT EXISTS songs_all ({', '.join(SONGS_COLS)})")
     local_total = 0
@@ -197,22 +221,57 @@ def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 2
     except sqlite3.Error:
         local_total = 0
 
-    if remote_total > 0 and local_total >= remote_total:
+    # 第一页：官方按收录时间降序，第一条即最新收录；同时拿 total
+    try:
+        first = get_json(client, f"{API}{SONGS_URI}", per_page=per_page, page=1)
+    except Exception:  # noqa: BLE001
+        first = None
+    remote_total = first.get("total", 0) if isinstance(first, dict) else 0
+    first_items = (first.get("data") or []) if isinstance(first, dict) else []
+
+    def _has_new(items: list) -> bool:
+        """items 里是否存在本地未收录的 bvid。"""
+        for s in items:
+            bvid = s.get("bvid")
+            if not bvid:
+                continue
+            try:
+                if not conn.execute(
+                    "SELECT 1 FROM songs_all WHERE bvid=?", (bvid,)
+                ).fetchone():
+                    return True
+            except sqlite3.Error:
+                return True  # 查询异常按有新歌处理，进入逐页模式兜底
+        return False
+
+    # 跳过条件（双保险）：第一页无新歌 且 行数也已追平远端
+    if first_items and not _has_new(first_items) and local_total >= remote_total > 0:
         print(f"  [songs] 已为最新（本地 {local_total} / 远端 {remote_total}）")
         return {"added": 0, "remote_total": remote_total,
                 "local_total": local_total, "up_to_date": True}
 
     added = 0
     page = 1
-    while True:
-        payload = get_json(client, f"{API}{SONGS_URI}", per_page=per_page, page=page)
-        items = payload.get("data") or [] if isinstance(payload, dict) else payload
+    max_pages = 400  # 保险上限：400 页 × 100 条 = 4 万条，防接口异常空转
+    while page <= max_pages:
+        if page == 1 and first_items:
+            items = first_items  # 复用已拉取的第一页，省一次请求
+        else:
+            try:
+                payload = get_json(client, f"{API}{SONGS_URI}", per_page=per_page, page=page)
+            except Exception as e:  # noqa: BLE001
+                print(f"  [songs] 第 {page} 页拉取失败，中止翻页：{e}")
+                break
+            items = payload.get("data") or [] if isinstance(payload, dict) else payload
         if not items:
             break
         for s in items:
+            bvid = s.get("bvid")
+            if not bvid:
+                continue
             try:
                 exists = conn.execute(
-                    "SELECT 1 FROM songs_all WHERE bvid=?", (s.get("bvid"),)
+                    "SELECT 1 FROM songs_all WHERE bvid=?", (bvid,)
                 ).fetchone()
             except sqlite3.Error:
                 exists = False  # 表已确保存在；查询异常视为未收录，尝试插入
@@ -220,17 +279,19 @@ def sync_songs(client: httpx.Client, conn: sqlite3.Connection, per_page: int = 2
                 continue
             try:
                 conn.execute(
-                    f"INSERT OR IGNORE INTO songs_all ({', '.join(SONGS_COLS)}) "
-                    f"VALUES ({','.join('?' * len(SONGS_COLS))})",
+                    f"INSERT OR IGNORE INTO songs_all ({', '.join(insert_cols)}) "
+                    f"VALUES ({','.join('?' * len(insert_cols))})",
                     tuple(_as_text(s.get(c)) if c in ("producers", "vocalists")
-                          else s.get(c) for c in SONGS_COLS),
+                          else s.get(c) for c in insert_cols),
                 )
                 conn.commit()
                 added += 1
             except sqlite3.Error as e:
-                print(f"  [songs] 插入失败 {s.get('bvid')}: {e}")
+                print(f"  [songs] 插入失败 {bvid}: {e}")
                 conn.rollback() if hasattr(conn, "rollback") else None
         if len(items) < per_page:
+            # 官方实际上限就是 100，正常最后一页必然 < 100；
+            # 但 per_page 已对齐 100，此处能安全作为「数据翻完」的信号
             break
         page += 1
     print(f"  [songs] 收录池新增 {added} 条（本地 {local_total} → {local_total + added}）")

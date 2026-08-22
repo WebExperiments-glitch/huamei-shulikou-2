@@ -6,6 +6,7 @@ import { api } from "../lib/api"
 import { useDebounce } from "../hooks/useDebounce"
 import { Autocomplete, type Suggestion } from "../components/Autocomplete"
 import { Empty, Spinner, fmt, fmtDate, downloadCSV, downloadJSON } from "../components/ui"
+import { PageHeader } from "../components/PageHeader"
 import { extractBv } from "../lib/bvid"
 import type { Song } from "../lib/types"
 
@@ -73,7 +74,9 @@ export default function SongLibrary() {
   const vocalist = params.get("vocalist") ?? ""
   const board = params.get("board") ?? ""
   const tier = params.get("tier") ?? ""
-  const sort = (params.get("sort") as SortKey) ?? "id"
+  // 默认按投稿时间倒序（最新投稿在前）。历史上默认 id desc（官方 id≈收录序），
+  // 但收录池 id 改为本地自增后与时间脱钩，pubtime 才是稳定的"最新"语义。
+  const sort = (params.get("sort") as SortKey) ?? "pubtime"
   const order = (params.get("order") as "asc" | "desc") ?? "desc"
   const page = Number(params.get("page") ?? "0") || 0
   const minWeeks = Number(params.get("min_weeks") ?? "0") || 0
@@ -87,7 +90,6 @@ export default function SongLibrary() {
   const debouncedQ = useDebounce(qInput, 350)
   useEffect(() => {
     if (debouncedQ !== q) setParam("q", debouncedQ)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedQ])
 
   const [producerInput, setProducerInput] = useState(producer)
@@ -182,18 +184,15 @@ export default function SongLibrary() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">数据 · 收录池</div>
-          <h1>歌曲库</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          {facetsQ.data ? `${facetsQ.data.total.toLocaleString()} 首收录` : "…"}
-          {facetsQ.data && facetsQ.data.with_metrics > 0 && (
-            <span> · {facetsQ.data.with_metrics.toLocaleString()} 首有播放指标</span>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        crumb="数据 · 收录池"
+        title="歌曲库"
+        extra={
+          facetsQ.data
+            ? `${facetsQ.data.total.toLocaleString()} 首收录${facetsQ.data.with_metrics > 0 ? ` · ${facetsQ.data.with_metrics.toLocaleString()} 首有播放指标` : ""}`
+            : "…"
+        }
+      />
 
       <div className="card">
         {/* 关键词（联想）+ P主 */}

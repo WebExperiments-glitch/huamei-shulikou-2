@@ -31,6 +31,8 @@ export interface IssueInfo {
   is_annual?: number
   /** 该期所用公式代：old(<54) / new(≥54)，由后端 issues 接口返回 */
   formula_version?: "old" | "new" | null
+  /** 四代精确分代（周榜公式说明展示用）：old(<54) / mid(54-102) / early(103-110) / current(≥111) */
+  formula_gen?: "old" | "mid" | "early" | "current" | null
 }
 
 export interface RankEntry {
@@ -412,10 +414,13 @@ export interface AiTurn {
 // ---- 网易云搜索（backend/app/api/netease.py） ----
 export type NeteaseKind = "song" | "artist" | "album" | "playlist"
 
+/** 音乐数据源：网易云 / QQ 音乐（Netease 页标题下拉切换） */
+export type MusicSource = "netease" | "qqmusic"
+
 /** 搜索结果统一卡片结构（backend search 返回 items[]） */
 export interface NeteaseItem {
   kind: NeteaseKind
-  id: number
+  id: number | string
   name: string
   sub: string
   pic?: string | null
@@ -436,6 +441,10 @@ export interface NeteaseItem {
   creator?: string
   track_count?: number
   play_count?: number
+  // 跨数据源（QQ 音乐）扩展字段
+  source?: MusicSource
+  mid?: string
+  vip?: boolean
 }
 
 export interface NeteaseSearchResult {
@@ -463,7 +472,7 @@ export interface NeteaseDetail {
 
 /** 标准曲目（专辑/歌单/歌手热门曲通用，backend _normalize_song 返回） */
 export interface NeteaseTrack {
-  id: number
+  id: number | string
   name: string
   alias?: string[]
   artists?: string[]
@@ -473,6 +482,28 @@ export interface NeteaseTrack {
   duration_ms?: number | null
   pop?: number | null
   mv_id?: number | null
+  // 跨数据源（QQ 音乐）扩展字段
+  source?: MusicSource
+  mid?: string
+  vip?: boolean
+}
+
+/** QQ 音乐搜索结果条目（backend qqmusic search 返回） */
+export interface QQMusicItem {
+  id: string
+  mid: string
+  name: string
+  singer: string
+  album?: string
+  pic?: string | null
+  duration_ms?: number
+  vip?: boolean
+}
+
+export interface QQMusicSearchResult {
+  keyword: string
+  count: number
+  items: QQMusicItem[]
 }
 
 /** 歌手详情（backend get_artist_detail 返回） */
@@ -612,4 +643,102 @@ export interface PredictResult {
   summary: PredictSummary | null
   total?: number
   items: PredictItem[]
+}
+
+// ---- 数据预警与洞察中心 ----
+export interface MilestoneItem {
+  tier: "myth" | "legend" | "hall"
+  tier_label: string
+  threshold: number
+  bvid: string
+  title: string
+  producers: string[]
+  vocalists: string[]
+  view: number
+  progress: number   // 0.75 ~ 0.999
+  remain: number
+  target: number
+}
+
+export interface NewcomerItem {
+  rank: number
+  bvid: string
+  title: string
+  score: number
+  pubtime?: number
+  url?: string
+}
+
+export interface SurgeItem {
+  rank: number
+  prev_rank: number
+  gain: number
+  bvid: string
+  title: string
+  score: number
+  url?: string
+}
+
+export interface InsightsOverview {
+  freshness: {
+    latest_weekly_issue: string | null
+    age_days: number | null
+    stale: boolean
+    error?: string
+  }
+  kpis: {
+    songs_total: number
+    board_count: number
+    latest_issue: string | null
+    tier_counts: { myth: number; legend: number; hall: number }
+    milestone_shots: { myth: number; legend: number; hall: number }
+  }
+  milestones: {
+    myth: MilestoneItem[]
+    legend: MilestoneItem[]
+    hall: MilestoneItem[]
+  }
+  newcomers: { issue: string | null; items: NewcomerItem[] }
+  surges: { cur_issue: string | null; prev_issue: string | null; items: SurgeItem[] }
+}
+
+// ---- 数据同步（/api/sync/status） ----
+export interface SyncStatus {
+  running: boolean
+  started_at: string | null
+  finished_at: string | null
+  log: string[]
+  error: string | null
+  summary: Record<string, unknown> | null
+}
+
+/** 后端榜单原始条目（字段可能有历史变体/缺省），供 normalizeRankEntry 归一化为 RankEntry。 */
+export interface RankRaw {
+  rank?: number | null
+  bvid?: string
+  title?: string
+  title_cn?: string | null
+  view?: number | null
+  views?: number | null
+  favorite?: number | null
+  favorites?: number | null
+  coin?: number | null
+  coins?: number | null
+  like?: number | null
+  likes?: number | null
+  share?: number | null
+  score?: number | null
+  sum_score?: number | null
+  pubtime?: number | null
+  first_recorded_at?: number | null
+  last_rank?: number | null
+  weeks_on_board?: number | null
+  peak_rank?: number | null
+  rate?: string | null
+  producers?: Producer[]
+  vocalists?: Vocalist[]
+  issue?: string
+  issue_date?: string
+  name?: string
+  best_rank?: number | null
 }

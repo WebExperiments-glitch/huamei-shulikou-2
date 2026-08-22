@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import * as echarts from "echarts/core"
-import type { EChartsCoreOption } from "echarts/core"
+import { init } from "../lib/echarts"
+import type { ECharts, EChartsCoreOption } from "echarts/core"
 
 export interface EChartHandle {
   /** 作为 ref 回调挂到图表容器 div 上 */
@@ -15,7 +15,7 @@ export interface EChartHandle {
  * 避免「组件先 return null / 条件渲染」导致 echarts.init 被跳过、图表空白的问题。
  */
 export function useEChart(option: EChartsCoreOption | null | undefined): EChartHandle {
-  const inst = useRef<echarts.ECharts | null>(null)
+  const inst = useRef<ECharts | null>(null)
   const optionRef = useRef<EChartsCoreOption | null | undefined>(option)
   optionRef.current = option
   const [node, setNode] = useState<HTMLDivElement | null>(null)
@@ -27,7 +27,7 @@ export function useEChart(option: EChartsCoreOption | null | undefined): EChartH
   // 容器挂载/卸载时初始化与销毁
   useEffect(() => {
     if (!node) return
-    const chart = echarts.init(node)
+    const chart = init(node)
     inst.current = chart
     const resize = () => chart?.resize()
     window.addEventListener("resize", resize)

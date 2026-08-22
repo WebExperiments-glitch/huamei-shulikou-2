@@ -52,8 +52,14 @@ def connect(path) -> sqlite3.Connection:
     conn = cache.get(key)
     if conn is None:
         uri = resolved.as_uri() + "?mode=ro"
-        real = sqlite3.connect(uri, uri=True)
+        real = sqlite3.connect(uri, uri=True, timeout=5)
         real.row_factory = sqlite3.Row
+        # 只读连接常用 PRAGMA：短超时避免长时间锁等待、WAL 下更稳
+        try:
+            real.execute("PRAGMA busy_timeout=5000")
+            real.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
         conn = _ROConn(real)
         cache[key] = conn
     return conn
@@ -63,9 +69,51 @@ def connect_write(path) -> sqlite3.Connection:
     """可写连接（connect() 是只读 mode=ro）。用于需要写入的库（如 agent 会话）。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
+    conn = sqlite3.connect(str(p), timeout=10)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # 本地写库：WAL 提升并发读写；synchronous=NORMAL 兼顾安全与吞吐
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.Error:
+        pass
     return conn
+
+
+def check(path) -> bool:
+    """连通性/健康检查：能否以只读方式打开并执行一条查询。失败返回 False。"""
+    try:
+        c = connect(path)
+        c.execute("SELECT 1")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def db_stats() -> dict:
+    """各数据源库的概况：文件是否存在、大小、可读性。供管理端点与 AI 使用。"""
+    out: dict[str, dict] = {}
+    for name, p in (
+        ("source", Path(config.SOURCE_DB)),
+        ("daily", config.DAILY_DB),
+        ("monthly", config.MONTHLY_DB),
+        ("hot", config.HOT_DB),
+        ("cache", config.CACHE_DB),
+        ("agent", config.AGENT_DB),
+    ):
+        try:
+            exists = p.exists()
+            out[name] = {
+                "path": str(p),
+                "exists": exists,
+                "size_bytes": p.stat().st_size if exists else None,
+                "readable": check(p) if exists else False,
+            }
+        except Exception as e:  # noqa: BLE001
+            out[name] = {"path": str(p), "exists": False, "error": str(e)}
+    return out
 
 
 def connect_source() -> sqlite3.Connection:

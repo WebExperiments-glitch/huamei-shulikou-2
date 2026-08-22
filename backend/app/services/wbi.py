@@ -12,11 +12,16 @@
 from __future__ import annotations
 
 import hashlib
+import random
+import re
 import time
 import urllib.parse
 from functools import reduce
 
-import httpx
+from scrapling.fetchers import Fetcher
+
+# 确保 PLAYWRIGHT_BROWSERS_PATH（D 盘项目目录）在 StealthyFetcher 启动浏览器前生效
+from ..core import config as _config  # noqa: F401
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
@@ -35,8 +40,10 @@ BROWSER_HEADERS = {
 }
 
 _NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+_FINGER_URL = "https://api.bilibili.com/x/frontend/finger/spi"
 
 _cache: dict = {"keys": None, "ts": 0.0}
+_device: dict = {"cookies": None, "ts": 0.0}
 
 
 def get_mixin_key(orig: str) -> str:
@@ -44,9 +51,46 @@ def get_mixin_key(orig: str) -> str:
     return reduce(lambda s, i: s + orig[i], MIXIN_KEY_ENC_TAB, "")[:32]
 
 
+def get_device_cookies() -> dict[str, str]:
+    """获取并缓存稳定的设备指纹 buvid3/buvid4（底层用 Scrapling Fetcher）。
+
+    B 站按 buvid 追踪设备：若每次请求都换新 buvid，会被风控判为异常设备。
+    这里在进程内只取一次并复用，让同一次抓取/搜索会话内 buvid 保持一致。
+    失败返回空 dict（调用方忽略即可，不阻塞业务）。
+    """
+    now = time.time()
+    if _device["cookies"] and now - _device["ts"] < 3600:
+        return _device["cookies"]
+    try:
+        r = Fetcher.get(_FINGER_URL, headers=BROWSER_HEADERS, impersonate="chrome", timeout=10)
+        d = (r.json() or {}).get("data") or {}
+        ck: dict[str, str] = {}
+        if d.get("b_3"):
+            ck["buvid3"] = d["b_3"]
+        if d.get("b_4"):
+            ck["buvid4"] = d["b_4"]
+        if ck:
+            _device["cookies"] = ck
+            _device["ts"] = now
+            return ck
+    except Exception:
+        pass
+    return {}
+
+
+def _wbi2(params: dict) -> dict:
+    """WBI2 增强：附加鼠标/键盘行为模拟参数，进一步降低被风控概率。"""
+    p = dict(params)
+    p.setdefault("dm_img_list", "[]")
+    p.setdefault("dm_img_str", "".join(random.sample("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 2)))
+    p.setdefault("dm_cover_img_str", "".join(random.sample("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 2)))
+    p.setdefault("dm_img_inter", '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}')
+    return p
+
+
 def fetch_keys() -> tuple[str, str]:
     """从 nav 接口取 (img_key, sub_key)。失败抛异常由调用方兜底。"""
-    r = httpx.get(_NAV_URL, headers=BROWSER_HEADERS, timeout=15, follow_redirects=True)
+    r = Fetcher.get(_NAV_URL, headers=BROWSER_HEADERS, impersonate="chrome", timeout=15)
     r.raise_for_status()
     wbi = r.json().get("data", {}).get("wbi_img", {})
     img = wbi.get("img_url", "").rsplit("/", 1)[-1].split(".")[0]
@@ -73,20 +117,69 @@ def sign(params: dict) -> dict:
     p = dict(params)
     p.pop("w_rid", None)
     p["wts"] = int(time.time())
-    items = sorted(p.items())
-
-    def _q(s: str) -> str:
-        return urllib.parse.quote(str(s), safe="")
-
-    query = "&".join(f"{_q(k)}={_q(v)}" for k, v in items)
+    # 官方算法（bilibili-API-collect）：先按 key 升序，再对每个值过滤 !'()*，
+    # 用默认 safe 字符集的 urlencode 拼 query，最后 md5(query + mixin_key)。
+    # 注意不可对每个键值用 quote(safe="")：那会把 -_.~ 等也转义，与 B站 服务端
+    # 重新编码的口径不一致，含这些字符的参数（如带标点的曲名搜索）会签名校验失败。
+    p = {k: re.sub(r"[!'()*]", "", str(v)) for k, v in sorted(p.items())}
+    query = urllib.parse.urlencode(p)
     p["w_rid"] = hashlib.md5((query + mixin).encode("utf-8")).hexdigest()
     return p
 
 
-def signed_get(url: str, params: dict, timeout: int = 15) -> httpx.Response:
-    """带 WBI 签名的 GET；nav 取键失败则回退未签名请求。"""
+def signed_get(url: str, params: dict, timeout: int = 15, wbi2: bool = False):
+    """带 WBI 签名的 GET（底层用 Scrapling Fetcher 模拟 Chrome TLS 指纹 + 稳定 buvid）；
+    nav 取键失败则回退未签名请求。wbi2=True 时附加行为模拟参数（风控更严的接口）。"""
     try:
-        signed = sign(params)
+        signed = sign(_wbi2(params) if wbi2 else params)
     except Exception:
         signed = dict(params)
-    return httpx.get(url, params=signed, headers=BROWSER_HEADERS, timeout=timeout, follow_redirects=True)
+    cookies = get_device_cookies()
+    return Fetcher.get(
+        url, params=signed, headers=BROWSER_HEADERS,
+        cookies=cookies or None, impersonate="chrome", timeout=timeout,
+    )
+
+
+def _build_url(url: str, params: dict) -> str:
+    """把参数字典拼成带 query 的完整 URL（StealthyFetcher 需要完整 URL）。"""
+    if not params:
+        return url
+    q = urllib.parse.urlencode(params, quote_via=urllib.parse.quote, safe="")
+    return f"{url}{'&' if '?' in url else '?'}{q}"
+
+
+def stealth_get(url: str, params: dict, timeout: int = 30, wbi2: bool = False):
+    """全隐身 GET（Scrapling StealthyFetcher 真实 Chromium 伪装），用于风控最严的接口。
+
+    带 WBI 签名 + 稳定 buvid 设备指纹。任一步骤失败即回退到轻量 Fetcher，
+    保证功能不因隐身浏览器初始化失败而中断。wbi2=True 时附加行为模拟参数。
+    """
+    try:
+        signed = sign(_wbi2(params) if wbi2 else params)
+    except Exception:
+        signed = dict(params)
+    cookies = get_device_cookies()
+    try:
+        from scrapling.fetchers import StealthyFetcher
+
+        r = StealthyFetcher.fetch(
+            _build_url(url, signed),
+            extra_headers=BROWSER_HEADERS,
+            cookies=(
+                [{"name": k, "value": v, "url": url} for k, v in cookies.items()]
+                if cookies
+                else None
+            ),
+            headless=True, google_search=False, disable_resources=True,
+            load_dom=False, network_idle=False, real_chrome=True,
+            timeout=timeout * 1000,
+        )
+        if r.status < 400:
+            return r
+    except Exception:
+        pass
+    return Fetcher.get(
+        url, params=signed, headers=BROWSER_HEADERS,
+        cookies=cookies or None, impersonate="chrome", timeout=timeout,
+    )

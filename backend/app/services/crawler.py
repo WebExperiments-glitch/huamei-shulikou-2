@@ -472,9 +472,15 @@ def _run(scope: str, recent_n: int) -> None:
 
 
 def start_refresh(scope: str = "recent", recent_n: int = 10) -> bool:
+    # 必须在锁内完成「检查 + 置 running」两件事：若先放锁再启动线程，
+    # 两个快速连续的请求可在锁外同时通过检查 -> 双线程并发爬取、各落一份快照
+    # （重复打 B 站 + 快照翻倍），故这里先占位 running，_run 启动后接管。
     with TASK_LOCK:
         if TASK["running"]:
             return False
+        TASK["running"] = True
+        TASK["scope"] = scope
+        TASK["message"] = "启动中…"
     threading.Thread(target=_run, args=(scope, recent_n), daemon=True).start()
     return True
 
@@ -598,7 +604,9 @@ def get_momentum(metric: str = "view", limit: int = 50, offset: int = 0) -> dict
                 "like": r["like"], "share": r["share"],
                 "dv": dv, "df": df, "dc": dc, "dl": dl, "ds": ds,
                 "dscore": dscore,
-                "day_view": round(dv / window_days, 1) if window_days else 0,
+                # 日增量仅在窗口≥1天时有意义：快照间隔过短（如数分钟）时 window_days 极小，
+                # 直接 dv/window_days 会把日增放大数十倍，误导涨速榜，故置 None。
+                "day_view": round(dv / window_days, 1) if window_days >= 1 else None,
                 "window_days": window_days,
             })
 
@@ -687,6 +695,10 @@ _BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 _THINK_TTL = 120.0
 _THINK_CACHE_MAX = 2000  # LRU 上限，防止长期运行内存无界增长
 _THINK_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_THINK_LOCK = threading.Lock()  # LRU 多线程防护：缓存读/改需原子性
+# 记录"哪些 BV 当前正在被后台抓取"，避免多个请求同时抓同一个冷 BV（重复打 B 站）
+_THINK_INFLIGHT: "set[str]" = set()
+_THINK_INFLIGHT_LOCK = threading.Lock()
 _THINK_THROTTLE = Throttle()
 # 冷查询硬超时（用户侧）：超过该时长则放弃等待、回退过期缓存（若有），绝不挂起 worker。
 # 后台抓取线程仍继续运行并在完成后写入缓存，故稍后重试多可命中。可用环境变量 THINK_TIMEOUT 覆盖（秒）。
@@ -775,39 +787,47 @@ def _load_detail(bvid: str) -> dict | None:
     与 think_detail 分离，使「硬超时」路径下：即便主线程已放弃等待，后台生产者仍
     能把结果落盘到缓存，稍后重试即可命中，而非丢弃。
     """
-    status, data = fetch_view(bvid, _THINK_THROTTLE)
-    if status != "ok":
-        return None
-    stat = data.get("stat") or {}
-    owner = data.get("owner") or {}
-    meta = _lookup_meta(bvid)
-    now = time.time()
-    detail = {
-        "bvid": bvid,
-        "aid": data.get("aid"),
-        "title": data.get("title") or "",
-        "title_cn": meta.get("title_cn") or "",
-        "owner": owner.get("name") or meta.get("owner") or "",
-        "owner_mid": owner.get("mid"),
-        "pubtime": data.get("pubdate") or 0,
-        "duration": data.get("duration") or 0,
-        "desc": data.get("desc") or "",
-        "cover": data.get("pic") or "",
-        "category": data.get("tname") or "",
-        "view": int(stat.get("view") or 0),
-        "danmaku": int(stat.get("danmaku") or 0),
-        "reply": int(stat.get("reply") or 0),
-        "favorite": int(stat.get("favorite") or 0),
-        "coin": int(stat.get("coin") or 0),
-        "share": int(stat.get("share") or 0),
-        "like": int(stat.get("like") or 0),
-        "fetched_at": int(now),
-    }
-    _THINK_CACHE[bvid] = (now, detail)
-    _THINK_CACHE.move_to_end(bvid)
-    if len(_THINK_CACHE) > _THINK_CACHE_MAX:
-        _THINK_CACHE.popitem(last=False)  # 超出上限淘汰最久未用的条目
-    return detail
+    try:
+        status, data = fetch_view(bvid, _THINK_THROTTLE)
+        if status != "ok":
+            return None
+        stat = data.get("stat") or {}
+        owner = data.get("owner") or {}
+        meta = _lookup_meta(bvid)
+        now = time.time()
+        detail = {
+            "bvid": bvid,
+            "aid": data.get("aid"),
+            "title": data.get("title") or "",
+            "title_cn": meta.get("title_cn") or "",
+            "owner": owner.get("name") or meta.get("owner") or "",
+            "owner_mid": owner.get("mid"),
+            "pubtime": data.get("pubdate") or 0,
+            "duration": data.get("duration") or 0,
+            "desc": data.get("desc") or "",
+            "cover": data.get("pic") or "",
+            "category": data.get("tname") or "",
+            "view": int(stat.get("view") or 0),
+            "danmaku": int(stat.get("danmaku") or 0),
+            "reply": int(stat.get("reply") or 0),
+            "favorite": int(stat.get("favorite") or 0),
+            "coin": int(stat.get("coin") or 0),
+            "share": int(stat.get("share") or 0),
+            "like": int(stat.get("like") or 0),
+            "fetched_at": int(now),
+        }
+        with _THINK_LOCK:
+            _THINK_CACHE[bvid] = (now, detail)
+            _THINK_CACHE.move_to_end(bvid)
+            if len(_THINK_CACHE) > _THINK_CACHE_MAX:
+                _THINK_CACHE.popitem(last=False)  # 超出上限淘汰最久未用的条目
+        return detail
+    finally:
+        # ⚠️ 无论成败都释放 in-flight 标记：若抓取失败提前 return 而漏掉此步，
+        # 该 BV 会被永久标记为「在途」，此后所有 think_detail 请求都只空等超时、
+        # 不再发起新抓取（表现为该曲详情永远拉不到），直到服务重启才恢复。
+        with _THINK_INFLIGHT_LOCK:
+            _THINK_INFLIGHT.discard(bvid)
 
 
 def _prefetch_details(bvids: list[str], max_prefetch: int = 5) -> None:
@@ -818,7 +838,9 @@ def _prefetch_details(bvids: list[str], max_prefetch: int = 5) -> None:
     for bvid in bvids:
         if done >= max_prefetch:
             break
-        if _THINK_CACHE.get(bvid) is not None:
+        with _THINK_LOCK:
+            hit = _THINK_CACHE.get(bvid)
+        if hit is not None:
             continue
         # 单首失败不影响其余；异常静默吞掉（预取本就是优化，不应报错）
         try:
@@ -834,23 +856,40 @@ def think_detail(bvid: str, timeout: float = _THINK_TIMEOUT) -> dict | None:
     冷查询交由后台生产者线程（_load_detail）抓取并写缓存，主线程仅受硬超时约束：
     超时即放弃等待、直接返回缓存中已有项（若有），否则按「未找到」处理，绝不挂起 worker。
     后台生产者即便在超时后完成也会写入缓存，故稍后重试多半可命中。
+    同一 BV 的在途抓取用 _THINK_INFLIGHT 去重：并发请求只发一次 B站请求，其余等待。
     """
     bvid = (bvid or "").strip()
     if not _BV_RE.fullmatch(bvid):
         return None
     now = time.time()
-    cached = _THINK_CACHE.get(bvid)
-    if cached is not None:
-        if now - cached[0] < _THINK_TTL:
-            _THINK_CACHE.move_to_end(bvid)  # 命中即刷新 LRU 位置
-            return cached[1]
-        _THINK_CACHE.pop(bvid, None)  # 过期项及时淘汰，避免陈旧数据滞留
-    # 冷查询：后台生产者抓取 + 写缓存；主线程硬超时后回退缓存（若有）
-    bg = threading.Thread(target=_load_detail, args=(bvid,), daemon=True)
-    bg.start()
-    bg.join(timeout)
-    fresh = _THINK_CACHE.get(bvid)
-    if fresh is not None:
-        _THINK_CACHE.move_to_end(bvid)
-        return fresh[1]
+    with _THINK_LOCK:
+        cached = _THINK_CACHE.get(bvid)
+        if cached is not None:
+            if now - cached[0] < _THINK_TTL:
+                _THINK_CACHE.move_to_end(bvid)  # 命中即刷新 LRU 位置
+                return cached[1]
+            _THINK_CACHE.pop(bvid, None)  # 过期项及时淘汰，避免陈旧数据滞留
+    # 冷查询：仅在无在途抓取时新起后台线程，否则直接等待既有结果
+    with _THINK_INFLIGHT_LOCK:
+        inflight = bvid in _THINK_INFLIGHT
+        if not inflight:
+            _THINK_INFLIGHT.add(bvid)
+    if not inflight:
+        bg = threading.Thread(target=_load_detail, args=(bvid,), daemon=True)
+        bg.start()
+    # 有界轮询等待结果（0.05s 粒度，总时长受 timeout 约束）
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _THINK_LOCK:
+            fresh = _THINK_CACHE.get(bvid)
+            if fresh is not None:
+                _THINK_CACHE.move_to_end(bvid)
+                return fresh[1]
+        time.sleep(0.05)
+    # 超时：回退缓存中已有项（若有），否则 None
+    with _THINK_LOCK:
+        fresh = _THINK_CACHE.get(bvid)
+        if fresh is not None:
+            _THINK_CACHE.move_to_end(bvid)
+            return fresh[1]
     return None

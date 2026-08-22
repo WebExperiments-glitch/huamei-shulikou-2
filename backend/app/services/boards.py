@@ -5,10 +5,15 @@ import time
 
 from ..core import db
 from .rank import (
+    CONTINUOUS_CURRENT_FROM_ISSUE,
+    CONTINUOUS_EARLY_WEIGHTS,
+    CONTINUOUS_FORMULA_FROM_ISSUE,
     DEFAULT_WEIGHTS,
+    MID_WEIGHTS,
     OLD_WEIGHTS,
     NEW_FORMULA_FROM_ISSUE,
     time_correction,
+    time_correction_mid,
     time_correction_old,
 )
 
@@ -22,11 +27,13 @@ BOARD_LABELS = {
 
 ISSUE_RE = re.compile(r"^(\d{8})$")
 
-# 各榜原始指标列名的差异：周榜用 view，传说/年榜用 views/favorites/coins/likes
+# 各榜原始指标列名的差异：周榜用 view，传说/年榜用 views/favorites/coins/likes。
+# 顺序必须与 _recalc 中的解构 `vc, fc, lc, cc` 词义一致（view, favorite, like, coin）；
+# 若把 coin/like 颠倒，会导致 like 值误按 coin 权重、coin 值误按 like 权重计算。
 METRIC_COLS = {
-    "weekly": ("view", "favorite", "coin", "like"),
-    "legend": ("views", "favorites", "coins", "likes"),
-    "annual": ("views", "favorites", "coins", "likes"),
+    "weekly": ("view", "favorite", "like", "coin"),
+    "legend": ("views", "favorites", "likes", "coins"),
+    "annual": ("views", "favorites", "likes", "coins"),
 }
 
 
@@ -77,11 +84,16 @@ def _list_issues_real(conn, board_type: str) -> list[dict]:
         try:
             if board_type == "weekly":
                 # weekly 表结构上不含 is_annual 列，直接跳过 PRAGMA 探测，立省 112 次查询
-                is_annual = 0
+                has_iid, has_ia = True, False
             else:
                 cols = {c[1] for c in conn.execute(f'PRAGMA table_info("{t}")').fetchall()}
-                is_annual = 1 if "is_annual" in cols else 0
-            sel = "COUNT(*) AS n, MIN(issue_id) AS iid" + (", MAX(is_annual) AS ia" if is_annual else ", 0 AS ia")
+                # 注意：legend / 新式 annual 表没有 issue_id 列，必须按列存在与否动态拼 SELECT，
+                # 否则 MIN(issue_id) 会抛 no such column，被下方 except 吞掉后 entries 恒为 0。
+                has_iid = "issue_id" in cols
+                has_ia = "is_annual" in cols
+            iid_expr = "MIN(issue_id)" if has_iid else "NULL"
+            ia_expr = "MAX(is_annual)" if has_ia else "0"
+            sel = f"COUNT(*) AS n, {iid_expr} AS iid, {ia_expr} AS ia"
             row = conn.execute(f'SELECT {sel} FROM "{t}"').fetchone()
             is_annual = int(row["ia"] or 0) if row else 0
             n = int(row["n"]) if row else 0
@@ -96,18 +108,28 @@ def _list_issues_real(conn, board_type: str) -> list[dict]:
             "issue_id": iid,  # 官方期号（weekly/annual 表含该列；legend 表无）
         })
     issues.sort(key=lambda x: x["issue"], reverse=True)
-    # 附加期序号（按日期升序，1-based）与公式版本。
-    # 周榜以官方期号 54 为界（旧 <54：2·Δview·t + 30Δfav + 3Δlike + 10Δcoin；
-    #                         新 ≥54：Δview·t + 15Δfav + 3Δlike + 30Δcoin）。
-    # 优先用表内 issue_id（weekly 与官方期号精确对应）；legend/annual 表无 issue_id
-    # 或不受该分界影响（其建立时间均晚于新公式时代），一律视为新公式。
+    # 附加期序号（按日期升序，1-based）与公式版本（前端显示用）。
+    # formula_version 保留 old/new 二值（前端 badge 着色、得分拆解等兼容契约）；
+    # formula_gen 为四代精确分代（周榜公式说明展示用，与 rank.py / _recalc 口径一致）：
+    #   old(<54) / mid(54-102) / early(103-110) / current(≥111)。
+    # 优先用表内 issue_id；legend/annual 表无 issue_id 或均晚于新公式时代，一律视为 current。
     total = len(issues)
     for i, iss in enumerate(issues):
         iss["seq"] = total - i  # 列表为降序，最早的期 seq=1
-        if board_type == "weekly" and iss["issue_id"] is not None:
-            iss["formula_version"] = "old" if iss["issue_id"] < NEW_FORMULA_FROM_ISSUE else "new"
+        iid = iss.get("issue_id")
+        if board_type == "weekly" and iid is not None:
+            iss["formula_version"] = "old" if iid < NEW_FORMULA_FROM_ISSUE else "new"
+            if iid < NEW_FORMULA_FROM_ISSUE:
+                iss["formula_gen"] = "old"
+            elif iid < CONTINUOUS_FORMULA_FROM_ISSUE:
+                iss["formula_gen"] = "mid"
+            elif iid < CONTINUOUS_CURRENT_FROM_ISSUE:
+                iss["formula_gen"] = "early"
+            else:
+                iss["formula_gen"] = "current"
         else:
             iss["formula_version"] = "new"
+            iss["formula_gen"] = "current"
     return issues
 
 
@@ -116,41 +138,85 @@ def latest_issue(conn, board_type: str) -> dict | None:
     return issues[0] if issues else None
 
 
-def _recalc(items: list[dict], board_type: str, issue_key: str, formula_version: str | None = None) -> list[dict]:
+def _recalc(items: list[dict], board_type: str, issue_key: str,
+            formula_version: str | None = None, issue_id: int | None = None) -> list[dict]:
     """用自建公式（rank.py 口径）重算得分与排名，作为官方 score 的交叉核验列（self_score / self_rank）。
 
-    得分 = 播放×t×w_view + 收藏×w_fav + 点赞×w_like + 投币×w_coin
-    新公式（≥issue 54）w = (1, 15, 3, 30)；旧公式（<54）w = (2, 30, 3, 10)。
-    t 为官方时间修正：
-      · 新公式 anchor = 周期起点（前一期统计截止 = 本期结算日 − 7 天），投稿越接近周期起点加成越小
-        （T[0]=1.0527 → T[6]=2.47）；
-      · 旧公式 anchor = 本周期结束（本期结算日），D = floor((结束−投稿)/86400) 阶梯。
+    四代公式，按 issue_id 自动选择（详见 docs/公式演变.md）：
+      · 远古（<54）：得分 = 2·Δ播放×t + 30Δ收藏 + 3Δ点赞 + 10Δ投币
+        anchor = 本期结算日（时间锚点 = 结算日零点）
+      · 中间（54 ≤ issue < 103）：得分 = Δ播放×t + 30Δ收藏 + 3Δ点赞 + 10Δ投币
+        anchor = 周期起点 = 结算日 − 7 天
+      · 现行早期（103 ≤ issue < 111）：得分 = Δ播放×t + 30Δ收藏 + 3Δ点赞 + 15Δ投币
+        anchor = 周期起点 = 结算日 − 7 天
+      · 现行（≥111）：得分 = Δ播放×t + 15Δ收藏 + 3Δ点赞 + 30Δ投币
+        anchor = 周期起点 = 结算日 − 7 天
+
     注意：官方表存的是当期累计值（跨期差分会出现回退/0 分），故这里直接对当期累计值加权，
     仅用于「与官方 rank 对照」，真正的榜单排名始终采用官方 score。
     """
     vc, fc, lc, cc = METRIC_COLS[board_type]
-    is_old = formula_version == "old"
-    if is_old:
+    settle_ts = _settle_ts(issue_key)
+
+    # ---------- 确定公式代 ----------
+    if formula_version == "old" or (issue_id is not None and issue_id < NEW_FORMULA_FROM_ISSUE):
+        # 远古公式（<issue 54）
         w = OLD_WEIGHTS
-        anchor = _settle_ts(issue_key)  # 旧公式以本周期结束为锚
+        anchor = settle_ts
+        for d in items:
+            pub = d.get("pubtime") or d.get("first_recorded_at") or 0
+            t = time_correction_old(int(pub), anchor) if pub else 2.47
+            score = (d.get(vc) or 0) * w["view"] * t \
+                + (d.get(fc) or 0) * w["favorite"] \
+                + (d.get(lc) or 0) * w["like"] \
+                + (d.get(cc) or 0) * w["coin"]
+            d["self_score"] = round(score, 2)
+            d["self_t"] = round(t, 4)
+    elif issue_id is not None and issue_id < CONTINUOUS_FORMULA_FROM_ISSUE:
+        # 中间公式（54 ≤ issue < 103）
+        w = MID_WEIGHTS
+        anchor = settle_ts - 7 * 86400
+        for d in items:
+            pub = d.get("pubtime") or d.get("first_recorded_at") or 0
+            t = time_correction_mid(int(pub), anchor) if pub else 1.0
+            score = (d.get(vc) or 0) * w["view"] * t \
+                + (d.get(fc) or 0) * w["favorite"] \
+                + (d.get(lc) or 0) * w["like"] \
+                + (d.get(cc) or 0) * w["coin"]
+            d["self_score"] = round(score, 2)
+            d["self_t"] = round(t, 4)
+    elif issue_id is not None and issue_id < CONTINUOUS_CURRENT_FROM_ISSUE:
+        # 现行早期公式（103 ≤ issue < 111）：连续对数 t，收藏30/投币15
+        w = CONTINUOUS_EARLY_WEIGHTS
+        anchor = settle_ts - 7 * 86400
+        for d in items:
+            pub = d.get("pubtime") or d.get("first_recorded_at") or 0
+            t = time_correction(int(pub), anchor) if pub else 1.0
+            score = (d.get(vc) or 0) * w["view"] * t \
+                + (d.get(fc) or 0) * w["favorite"] \
+                + (d.get(lc) or 0) * w["like"] \
+                + (d.get(cc) or 0) * w["coin"]
+            d["self_score"] = round(score, 2)
+            d["self_t"] = round(t, 4)
     else:
+        # 现行公式（≥issue 111）：连续对数 t，收藏15/投币30
         w = DEFAULT_WEIGHTS
-        # 新公式以「周期起点 = 前一期统计截止」为锚，即本期结算日 − 7 天
-        anchor = _settle_ts(issue_key) - 7 * 86400
-    for d in items:
-        pub = d.get("pubtime") or d.get("first_recorded_at") or 0
-        if pub:
-            t = time_correction_old(int(pub), anchor) if is_old else time_correction(int(pub), anchor)
-        else:
-            t = 2.47 if is_old else 1.0
-        score = (d.get(vc) or 0) * w["view"] * t \
-            + (d.get(fc) or 0) * w["favorite"] \
-            + (d.get(lc) or 0) * w["like"] \
-            + (d.get(cc) or 0) * w["coin"]
-        d["self_score"] = round(score, 2)
-        d["self_t"] = round(t, 4)
-    items.sort(key=lambda r: (r["self_score"], r.get(vc) or 0), reverse=True)
-    for i, d in enumerate(items, 1):
+        anchor = settle_ts - 7 * 86400
+        for d in items:
+            pub = d.get("pubtime") or d.get("first_recorded_at") or 0
+            t = time_correction(int(pub), anchor) if pub else 1.0
+            score = (d.get(vc) or 0) * w["view"] * t \
+                + (d.get(fc) or 0) * w["favorite"] \
+                + (d.get(lc) or 0) * w["like"] \
+                + (d.get(cc) or 0) * w["coin"]
+            d["self_score"] = round(score, 2)
+            d["self_t"] = round(t, 4)
+
+    # self_rank 用按 self_score 降序的副本确定名次，但不改动 items 本身的官方顺序
+    # （官方 rank 顺序由调用方 SQL 的 ORDER BY rank 保证，这里不得原地排序打乱它，
+    #   否则 rankings 接口返回的数组顺序会与官方排名不一致——曾导致前端列表顺序错乱）。
+    ranked = sorted(items, key=lambda r: (r["self_score"], r.get(vc) or 0), reverse=True)
+    for i, d in enumerate(ranked, 1):
         d["self_rank"] = i
     return items
 
@@ -208,21 +274,29 @@ def get_issue_rankings(conn, board_type: str, issue_key: str, top: int = 100, of
             out.append(d)
     # 公式分代：weekly 以官方 issue_id=54 为界；legend/annual 表无 issue_id 或均晚于新公式时代
     formula_version = "new"
+    issue_id = None
     if board_type == "weekly":
         try:
             row = conn.execute(f'SELECT MIN(issue_id) AS iid FROM "{table}"').fetchone()
-            iid = row["iid"] if row else None
-            if iid is not None and iid < NEW_FORMULA_FROM_ISSUE:
+            issue_id = row["iid"] if row else None
+            if issue_id is not None and issue_id < NEW_FORMULA_FROM_ISSUE:
                 formula_version = "old"
         except Exception:
             pass
-    return _recalc(out, board_type, issue_key, formula_version)
+    return _recalc(out, board_type, issue_key, formula_version, issue_id)
 
 
 def get_song_issue(conn, board_type: str, issue_key: str, bvid: str) -> dict | None:
     if not ISSUE_RE.match(issue_key):
         return None
     table = _table_name(board_type, issue_key)
+    # 显式校验表存在：PRAGMA table_info 对缺失表静默返回空集，真正报错的是后续 SELECT，
+    # 故必须先查 sqlite_master（AI 智能体可能传入格式合法但不存在的期键）。
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if not exists:
+        return None
     # weekly 表无 producers/vocalists 列，直接跳过 PRAGMA 探测（get_song_history 循环内调用频繁）
     has_meta_cols = board_type != "weekly"
     if has_meta_cols:

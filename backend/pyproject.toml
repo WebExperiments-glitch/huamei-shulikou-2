@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "huamei-shulikou-backend"
-version = "0.1.0-preview"
+version = "0.2.0.1-rc1"
 description = "huamei术力口后端 —— VOCALOID 周榜数据服务"
 requires-python = ">=3.13"
 license = { text = "CC BY-NC 4.0" }
@@ -14,3 +14,9 @@ uvicorn-run = "uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload"
 
 [tool.setuptools.packages.find]
 where = ["app"]
+
+[tool.pytest.ini_options]
+# 只收集 tests/ 目录，避免误收集 backend 根目录下的手动调试脚本
+# （如 .agent_translate_test.py 这类直连本地服务的临时脚本）。
+testpaths = ["tests"]
+python_files = ["test_*.py"]

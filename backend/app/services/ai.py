@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -35,6 +36,8 @@ from app.services import songs as _songs
 from app.services import netease as _netease
 from app.services import translate as _translate
 from app.services import rank as _rank
+from app.services import tokenizer
+from app.services import jobs as _jobs
 
 logger = logging.getLogger("ai")
 
@@ -126,8 +129,9 @@ DEFAULT_TEMPERATURE = float(os.environ.get("AI_TEMPERATURE", "0.6"))
 REQUEST_TIMEOUT = float(os.environ.get("AI_TIMEOUT", "420"))
 
 # 云端模式思考链配置（仅当 _CLOUD_MODE 时生效；本地蒸馏模型本就强制思考，无需此参数）。
-AI_THINKING_ENABLED = os.environ.get("AI_THINKING_ENABLED", "true").lower() == "true"
-AI_REASONING_EFFORT = os.environ.get("AI_REASONING_EFFORT", "high")  # none|low|medium|high|xhigh|max
+# 默认关闭思考 + effort=low，符合省钱约束（前端可逐条手动开启深度思考）。
+AI_THINKING_ENABLED = os.environ.get("AI_THINKING_ENABLED", "false").lower() == "true"
+AI_REASONING_EFFORT = os.environ.get("AI_REASONING_EFFORT", "low")  # none|low|medium|high|xhigh|max
 AI_CLOUD_MAX_TOKENS = int(os.environ.get("AI_CLOUD_MAX_TOKENS", "8192"))
 
 
@@ -155,7 +159,8 @@ def _log_has_oom(cfg: dict) -> bool:
     try:
         if not os.path.exists(_log_path(cfg)):
             return False
-        content = open(_log_path(cfg), encoding="utf-8", errors="ignore").read().lower()
+        with open(_log_path(cfg), encoding="utf-8", errors="ignore") as f:
+            content = f.read().lower()
         return any(k in content for k in _OOM_KEYWORDS)
     except Exception:  # noqa: BLE001
         return False
@@ -315,15 +320,136 @@ def _target_base() -> str:
     return _base_url(active_cfg())
 
 
-def _thinking_payload() -> dict:
-    """云端模式开启思考链。仅对支持 thinking 的云端模型（DeepSeek-V4-Flash 等）生效。
-    本地蒸馏模型本就强制思考，且 llama-server 不认 thinking 字段，故本地模式返回空。"""
-    if not _CLOUD_MODE or not AI_THINKING_ENABLED:
+def _is_sensenova() -> bool:
+    """目标端点是否为 SenseNova 网关（token.sensenova.cn）。
+
+    Sensenova 对 OpenAI 兼容 payload 更严格：messages[].content 必须是多模态
+    数组格式 [{"type":"text","text":...}]，纯字符串会返回 400「invalid arguments」
+    或直接超时；DeepSeek/OpenAI 则认字符串。据此决定是否做 content 格式适配。
+    """
+    return _CLOUD_MODE and "sensenova" in (AI_BASE_URL or "").lower()
+
+
+def _adapt_messages(messages: list[dict]) -> list[dict]:
+    """把字符串 content 转为 SenseNova 要求的数组格式（仅非云端或非 SenseNova 时原样返回）。
+
+    - content 为字符串（非空）：转成 [{"type":"text","text":content}]。
+    - content 已是数组 / None（如 tool 消息或带 tool_calls 的 assistant 消息）：保持原样。
+    """
+    if not _is_sensenova():
+        return messages
+    out: list[dict] = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str) and c.strip():
+            m2 = dict(m)
+            m2["content"] = [{"type": "text", "text": c}]
+            out.append(m2)
+        else:
+            out.append(m)
+    return out
+
+
+_TPM_MAX_RETRIES = 3  # 429 分钟级限流的退避重试预算（独立于各调用方的 failover 槽位）
+
+
+def _is_tpm_429(resp) -> bool:
+    """是否命中网关「每分钟吞吐限流」（如 SenseNova HTTP 429 / code 429001 / inference tpm exhausted）。
+
+    这类限流是分钟级瞬时峰值，退避后同频重试即可恢复；换模型无用（多个模型共用同一个网关）
+    也不占 5 小时窗口配额，故单独处理、不走故障转移。
+    流式响应需先 read() 才能访问 text（对非流式响应幂等无害）。
+    """
+    try:
+        if resp.status_code != 429:
+            return False
+        try:
+            resp.read()  # 流式响应读入 body 缓存；非流式响应直接返回缓存，幂等安全
+        except Exception:  # noqa: BLE001
+            pass
+        body = (resp.text or "").lower()
+        return "429001" in body or "tpm" in body or "rate limit" in body
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _tpm_backoff_seconds(attempt: int) -> float:
+    """429 退避时长：1.5s / 3s / 4.5s，逐步拉开间隔摊平瞬时吞吐峰值。"""
+    return 1.5 * (attempt + 1)
+
+
+def _post_chat(base: str, payload: dict) -> httpx.Response:
+    """非流式 POST /chat/completions，带 429 分钟级限流退避。
+
+    退避预算（_TPM_MAX_RETRIES）独立于调用方的 failover 槽位：重试期间不换模型、
+    不占用调用方的 attempt 次数；预算耗尽后原样返回最后一个 429 响应，
+    交由调用方按既有 failover / 报错流程处理（此时 r.status_code != 200）。
+    """
+    r: httpx.Response | None = None
+    for retry in range(_TPM_MAX_RETRIES + 1):
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+            r = client.post(f"{base}/chat/completions", headers=_headers(), json=payload)
+        if not _is_tpm_429(r) or retry == _TPM_MAX_RETRIES:
+            break
+        time.sleep(_tpm_backoff_seconds(retry))
+    assert r is not None
+    return r
+
+
+def _stream_chat(base: str, payload: dict | bytes) -> tuple[httpx.Client, httpx.Response]:
+    """发起流式 POST /chat/completions 并返回已就绪响应，带 429 分钟级限流退避。
+
+    与 _post_chat 同一套独立退避预算。payload 支持 dict（json=）或 bytes（content=，透传用）。
+    返回 (client, resp)：调用方负责消费 resp（iter_lines），并在 finally 中
+    resp.close() + client.close()。
+    """
+    client: httpx.Client | None = None
+    resp: httpx.Response | None = None
+    for retry in range(_TPM_MAX_RETRIES + 1):
+        client = httpx.Client(timeout=REQUEST_TIMEOUT)
+        req = client.build_request(
+            "POST", f"{base}/chat/completions", headers=_headers(),
+            **({"json": payload} if isinstance(payload, dict) else {"content": payload}),
+        )
+        resp = client.send(req, stream=True)
+        if not _is_tpm_429(resp) or retry == _TPM_MAX_RETRIES:
+            return client, resp
+        resp.close()
+        client.close()
+        time.sleep(_tpm_backoff_seconds(retry))
+    assert client is not None and resp is not None
+    return client, resp
+
+
+def _thinking_payload(thinking: bool | None = None) -> dict:
+    """云端模式思考链载荷。仅对支持 thinking 的云端模型（DeepSeek-V4-Flash 等）生效。
+    本地蒸馏模型本就强制思考，且 llama-server 不认 thinking 字段，故本地模式返回空。
+
+    thinking 三态：
+      - None : 用环境变量 AI_THINKING_ENABLED 兜底（默认开）。
+      - True : 开启思考，effort 用 AI_REASONING_EFFORT（开思考即「不限」模式，不额外压省）。
+      - False: 显式关闭思考（省钱：跳过推理 token；智能体改为「调工具后直接作答」）。
+    """
+    if not _CLOUD_MODE:
         return {}
-    # DeepSeek 兼容：thinking 为顶层字段；reasoning_effort 部分网关也认，双保险。
+    if _is_sensenova():
+        # SenseNova 网关是参数白名单制，不认顶层 thinking 字段（只认 reasoning_effort）；
+        # 发 thinking 会直接 400 invalid_request_error (code 3)。故这里只发网关认的字段。
+        if AI_THINKING_ENABLED if thinking is None else thinking:
+            return {"reasoning_effort": AI_REASONING_EFFORT}
+        # 关思考时用最低档；"none" 不在网关取值内，避免再次触发校验失败。
+        return {"reasoning_effort": "low"}
+    if AI_THINKING_ENABLED if thinking is None else thinking:
+        # DeepSeek 兼容：thinking 为顶层字段；reasoning_effort 部分网关也认，双保险。
+        return {
+            "thinking": {"type": "enabled", "effort": AI_REASONING_EFFORT},
+            "reasoning_effort": AI_REASONING_EFFORT,
+        }
+    # 显式关闭思考（省钱核心）：V4-Flash 默认即思考，若不显式 disabled 会照常产出推理 token，
+    # 白花一倍多 token。显式 disabled 可让模型跳过推理、直接作答（智能体则「调工具后直接作答」）。
     return {
-        "thinking": {"type": "enabled", "effort": AI_REASONING_EFFORT},
-        "reasoning_effort": AI_REASONING_EFFORT,
+        "thinking": {"type": "disabled"},
+        "reasoning_effort": "none",
     }
 
 
@@ -348,23 +474,20 @@ def health() -> dict:
     }
 
 
-def _chat_once(messages, max_tokens, temperature):
+def _chat_once(messages, max_tokens, temperature, thinking: bool | None = None):
     """核心：带一次故障转移的完整（非流式）请求。云端/本地通用，不含信号量。"""
     payload = {
         "model": AI_MODEL,
-        "messages": messages,
+        "messages": _adapt_messages(messages),
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": False,
-        **_thinking_payload(),
+        **_thinking_payload(thinking),
     }
     for attempt in range(2):
         base = _target_base()
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                r = client.post(
-                    f"{base}/chat/completions", headers=_headers(), json=payload
-                )
+            r = _post_chat(base, payload)
             if r.status_code != 200:
                 body = r.text or ""
                 if attempt == 0 and (_is_oom_text(body) or r.status_code >= 500):
@@ -372,7 +495,8 @@ def _chat_once(messages, max_tokens, temperature):
                     continue
                 raise RuntimeError(f"HTTP {r.status_code}: {body[:200]}")
             data = r.json()
-            msg = data.get("choices", [{}])[0].get("message", {})
+            # choices 可能为空数组（异常网关响应），安全取值防 IndexError
+            msg = (data.get("choices") or [{}])[0].get("message", {})
             return {
                 "content": msg.get("content", ""),
                 "reasoning": msg.get("reasoning_content", ""),
@@ -390,66 +514,130 @@ def chat(
     messages: list[dict],
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool | None = None,
 ) -> dict:
     """一次性非流式对话，返回 {content, reasoning, usage}。失败自动降级重试一次。
 
     云端模式：跳过并发信号量（敞开使用）；本地模式：用 _GEN_SEM 限制并发。
+    thinking：None 用环境变量兜底；True 开思考；False 关思考（省钱）。
     """
     _ensure_init()
     if _CLOUD_MODE and max_tokens == DEFAULT_MAX_TOKENS:
         max_tokens = AI_CLOUD_MAX_TOKENS
     if cloud_mode():
-        return _chat_once(messages, max_tokens, temperature)
+        return _chat_once(messages, max_tokens, temperature, thinking)
     with _GEN_SEM:
-        return _chat_once(messages, max_tokens, temperature)
+        return _chat_once(messages, max_tokens, temperature, thinking)
 
 
-def _stream_once(messages, max_tokens, temperature) -> Iterator[dict]:
+def _usage_stats(obj: dict) -> dict | None:
+    """从流式分块提取 KV 缓存用量（DeepSeek 在末块返回 usage）。
+
+    兼容两种字段形态：
+      - DeepSeek：usage.prompt_cache_hit_tokens / prompt_cache_miss_tokens
+      - OpenAI 兼容：usage.prompt_tokens_details.cached_tokens
+    无用量信息时返回 None。
+    """
+    usage = obj.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    hit = usage.get("prompt_cache_hit_tokens")
+    if hit is None:
+        details = usage.get("prompt_tokens_details") or {}
+        hit = details.get("cached_tokens") if isinstance(details, dict) else None
+    miss = usage.get("prompt_cache_miss_tokens")
+    total = usage.get("total_tokens")
+    if hit is None and miss is None and total is None:
+        return None
+    hit = int(hit or 0)
+    if miss is not None:
+        miss = int(miss)
+    else:
+        miss = max(0, int(total or 0) - hit)
+    return {"hit": hit, "miss": miss}
+
+
+def _emit_cache_usage(stats: dict | None, est_input: int | None = None) -> Iterator[dict]:
+    """把 KV 缓存用量转成 cache_usage 事件（无用量则跳过）。
+
+    该事件让前端展示「缓存命中率」，是参考 dsh「缓存可观测」原则的体现：
+    只要输入前缀保持字节级稳定（system+tools+历史原样重发），DeepSeek 就会命中 KV 缓存，
+    命中词元按约 1/10 计费，观测命中率有助于验证前缀稳定性设计。
+
+    est_input 为离线 tokenizer 估算的本次输入 token 数（见 services.tokenizer），
+    与模型返回的命中/未命中一起折算成本（元），让用户直观看到「命中省了多少钱」。
+    """
+    if not stats or not (stats.get("hit") or stats.get("miss")):
+        return
+    total = stats["hit"] + stats["miss"]
+    cost = tokenizer.estimate_input_cost(stats["hit"], stats["miss"])
+    yield {
+        "type": "cache_usage",
+        "hit": stats["hit"],
+        "miss": stats["miss"],
+        "total": total,
+        "pct": round(stats["hit"] * 100 / total, 1) if total else 0.0,
+        "est_input": int(est_input or 0),
+        "cost": round(cost, 5),
+        "pricing": tokenizer.pricing(),
+    }
+
+
+def _stream_once(messages, max_tokens, temperature, thinking: bool | None = None) -> Iterator[dict]:
     """核心流式：带一次故障转移的流式生成器，不含信号量。云端/本地通用。"""
     payload = {
         "model": AI_MODEL,
-        "messages": messages,
+        "messages": _adapt_messages(messages),
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
-        **_thinking_payload(),
+        **_thinking_payload(thinking),
     }
+    # 离线估算本次输入 token 数（官方 tokenizer，不联网），供 cache_usage 事件折算成本
+    try:
+        est_input = tokenizer.count_messages(messages, payload.get("tools"))
+    except Exception:  # noqa: BLE001
+        est_input = None
     for attempt in range(2):
         base = _target_base()
+        client: httpx.Client | None = None
+        resp: httpx.Response | None = None
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                with client.stream(
-                    "POST",
-                    f"{base}/chat/completions",
-                    headers=_headers(),
-                    json=payload,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = resp.read().decode("utf-8", "ignore")
-                        if attempt == 0 and (_is_oom_text(body) or resp.status_code >= 500):
-                            _do_failover()
-                            continue
-                        yield {"type": "error", "text": f"HTTP {resp.status_code}: {body[:200]}"}
+            # 429 退避在 _stream_chat 内部完成（独立预算，不占本循环 failover 槽位）
+            client, resp = _stream_chat(base, payload)
+            if resp.status_code != 200:
+                body = resp.read().decode("utf-8", "ignore")
+                if attempt == 0 and (_is_oom_text(body) or resp.status_code >= 500):
+                    _do_failover()
+                    continue
+                yield {"type": "error", "text": f"HTTP {resp.status_code}: {body[:200]}"}
+                return
+            usage_stats: dict | None = None
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        yield from _emit_cache_usage(usage_stats, est_input)
+                        yield {"type": "done"}
                         return
-                    for line in resp.iter_lines():
-                        if not line:
-                            continue
-                        if line.startswith("data:"):
-                            chunk = line[5:].strip()
-                            if chunk == "[DONE]":
-                                yield {"type": "done"}
-                                return
-                            try:
-                                obj = json.loads(chunk)
-                            except json.JSONDecodeError:
-                                continue
-                            delta = obj.get("choices", [{}])[0].get("delta", {})
-                            if delta.get("content"):
-                                yield {"type": "content", "text": delta["content"]}
-                            elif delta.get("reasoning_content"):
-                                yield {"type": "reasoning", "text": delta["reasoning_content"]}
-                    yield {"type": "done"}
-                    return
+                    try:
+                        obj = json.loads(chunk)
+                    except json.JSONDecodeError:
+                        continue
+                    u = _usage_stats(obj)
+                    if u:
+                        usage_stats = u
+                    # choices 可能为空数组（如 SenseNova 末尾的 usage 块），安全取值防 IndexError
+                    delta = (obj.get("choices") or [{}])[0].get("delta", {})
+                    if delta.get("content"):
+                        yield {"type": "content", "text": delta["content"]}
+                    elif delta.get("reasoning_content"):
+                        yield {"type": "reasoning", "text": delta["reasoning_content"]}
+            yield from _emit_cache_usage(usage_stats, est_input)
+            yield {"type": "done"}
+            return
         except Exception as exc:  # noqa: BLE001
             logger.exception("ai stream failed")
             if attempt == 0:
@@ -457,12 +645,19 @@ def _stream_once(messages, max_tokens, temperature) -> Iterator[dict]:
                 continue
             yield {"type": "error", "text": str(exc)}
             return
+        finally:
+            # continue / return / 异常路径都走这里，确保流式资源不泄漏
+            if resp is not None:
+                resp.close()
+            if client is not None:
+                client.close()
 
 
 def stream_chat(
     messages: list[dict],
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool | None = None,
 ) -> Iterator[dict]:
     """流式对话。
 
@@ -474,18 +669,70 @@ def stream_chat(
     请求失败（含 OOM/500）会自动降级到另一模型并重试一次。
 
     云端模式：跳过并发信号量（敞开使用）；本地模式：用 _GEN_SEM 限制并发。
+    thinking：None 用环境变量兜底；True 开思考；False 关思考（省钱）。
     """
     _ensure_init()
     if _CLOUD_MODE and max_tokens == DEFAULT_MAX_TOKENS:
         max_tokens = AI_CLOUD_MAX_TOKENS
     if cloud_mode():
-        yield from _stream_once(messages, max_tokens, temperature)
+        yield from _stream_once(messages, max_tokens, temperature, thinking)
     else:
         _GEN_SEM.acquire()
         try:
-            yield from _stream_once(messages, max_tokens, temperature)
+            yield from _stream_once(messages, max_tokens, temperature, thinking)
         finally:
             _GEN_SEM.release()
+
+
+def openai_chat_completions_passthrough(payload: bytes) -> Iterator[str]:
+    """OpenAI 兼容透传：把前端发来的 chat/completions body 原样转发到云端端点，
+    并将上游 SSE（text/event-stream，含 data: 与 [DONE]）逐行原样吐出。
+
+    用途：浏览器直连某些第三方端点（如 SenseNova）会被 CORS 拦截，经本项目后端中转即可直连。
+    返回原始 OpenAI SSE 文本行（含空行），由 /api/ai/chat/completions 端点原样转发。
+    """
+    request_payload = payload
+    if _is_sensenova():
+        # SenseNova 要求 content 为数组格式，前端通常发纯字符串——这里统一适配后转发。
+        try:
+            obj = json.loads(payload)
+            if isinstance(obj.get("messages"), list):
+                obj["messages"] = _adapt_messages(obj["messages"])
+                request_payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+    # 429 退避在 _stream_chat 内部完成（独立预算，不占调用方任何槽位）
+    client: httpx.Client | None = None
+    resp: httpx.Response | None = None
+    try:
+        client, resp = _stream_chat(_target_base(), request_payload)
+        if resp.status_code != 200:
+            body = resp.read().decode("utf-8", "ignore")
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "error": {
+                            "message": f"HTTP {resp.status_code}: {body[:300]}",
+                        },
+                        "type": "invalid_request_error",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            return
+        for line in resp.iter_lines():
+            if not line:
+                yield "\n"
+            else:
+                yield line + "\n"
+    finally:
+        # 确保流式资源不泄漏（透传无 failover，一次成功或失败即结束）
+        if resp is not None:
+            resp.close()
+        if client is not None:
+            client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -638,44 +885,80 @@ def build_song_messages(bvid: str, detail: dict, question: str | None = None) ->
 # 本地 4B/2B 蒸馏模型无法可靠产出结构化 tool call，自动退化为纯 chat 流式。
 # 工具统一在服务端执行（只读查询 + 联网搜索），结果以 role:tool 回灌给模型。
 # ---------------------------------------------------------------------------
-AGENT_SYSTEM = """你是一个术力口（中文 VOCALOID）数据智能体，可以使用工具查询 Biliboard 周榜、传说曲榜、年榜、月榜、日榜、单曲实时数据、歌曲检索、P主/歌姬作品、单曲上榜历史、两期对比、趋势与筛选统计，以及联网搜索（web_search）与网页正文抓取（web_fetch）。
+AGENT_SYSTEM = """你是术力口（中文 VOCALOID）数据智能体。所有数据必须来自工具返回，绝不编造。
 
-你还可以查询网易云音乐：netease_search（搜歌/歌手/专辑/歌单）、netease_song（单曲详情+评论数+热度）、netease_lyric（歌词）、netease_artist（歌手+热门曲）、netease_album（专辑+曲目）、netease_playlist（歌单+曲目）、netease_song_url（播放直链）。这些工具无需登录、只读；常用于「某首术曲在网易云上的热度/评论/收藏情况」或「把 B站曲子与网易云版本做对照」。通常先 netease_search 拿到 id，再调对应详情工具。
+【数据工具】B站榜：get_weekly_ranking 周榜、get_annual_ranking 年榜、get_legend_songs 传说榜、get_monthly_ranking/get_daily_ranking 月/日榜、get_hot_rankings 实时综合榜、get_hot_momentum 涨速榜、get_reentry_tracks 回榜、get_top_by_metric 按指标Top、list_issues 期次、get_song_predict 下期冲榜预测。单曲：get_song_detail、search_songs（检索，自动抓实时）、get_song_history 上榜史、get_song_issue_rank 单期排名、get_weekly_trend 趋势、explain_song_score 得分拆解、analyze_song 深度分析、compare_platforms 跨平台、get_song_compare 两曲对比、compare_issues 两期对比、get_relation_graph 关系图谱、get_random_songs 随机发现。角色：get_creator_stats、compare_creators、get_artist_works。总览：get_pool_stats 收录池、get_system_status 数据健康、get_system_overview 系统总览、get_insights 预警洞察（冲刺神话/传说/殿堂、新曲首秀、排名突进、新鲜度）。网易云：先 netease_search 拿 id，再 netease_song/netease_lyric/netease_artist/netease_album/netease_playlist/netease_song_url/netease_comments；歌词用 get_song_lyrics（bvid 优先B站CC字幕，歌名走网易云）。翻译用 translate_text。可视化：有可量化数据时调 render_chart（ECharts，option 须为合法 JSON 含 series），每轮 1–2 张。
 
-你还可以生成可视化图表：当查询到可量化数据（如周榜 Top10 得分对比、播放量趋势、各歌姬上榜分布）时，可调用 render_chart 生成 ECharts 图表（柱状/折线/饼图等）直接展示给用户。每轮最多渲染 1–2 张，option 必须是合法 JSON 且含 series。
+【联网】web_search 查站外事实（背景/人物/动态/定义）；对最相关 1–2 链接用 web_fetch 读正文取证；可多步检索直到证据充分（最多 12 步）。搜索不可用时不编造，说明后改用站内数据。
 
-你还能做跨平台对照与深度分析：用 compare_platforms 把同一首歌在 B站（实时播放/互动）与网易云（热度/评论）两侧数据并列对照；用 analyze_song 对一首曲子触发「术曲思考」深度分析（互动健康度 / 传播与破圈 / 受众粘性 / 综合结论）。
+【引用】联网/抓取内容必须标注来源，用 markdown 链接+真实 URL，不得杜撰。
 
-你还能做数据深度挖掘与语言辅助：用 translate_text 翻译日文/英文歌名与歌词行；用 get_creator_stats 查某位 P主/歌姬的汇总数据（歌曲数、总播放、传说/神话曲数、代表曲）；用 get_song_compare 把两首曲子的 B站实时互动数据并列对比；用 explain_song_score 拆解某首曲子的得分因子构成（播放/收藏/点赞/投币贡献、权重、时间修正、公式版本）；用 get_top_by_metric 列出某期周榜按指定指标排序的 Top N；用 compare_creators 对比两位 P主/歌姬（歌曲数/总播放/传说神话数/代表曲）；用 get_pool_stats 看收录池全貌（总数/歌姬数/P主数/年份分布）；用 get_system_status 看数据健康（官方同步进度/最新快照/实时库规模）。
+【权限操作】只读工具直接执行；收藏/笔记/导出/刷新/重建/重算须先说明意图并发起请求，由前端确认后执行，未确认不得声称已完成。list_favorites 只读自动执行。
 
-你还能洞察实时热度：用 get_hot_momentum 看当前涨得最快的术曲（涨速榜，按播放/收藏/投币/点赞/分享/综合分增量排序）；用 get_hot_rankings 看实时综合热度总盘（含殿堂/传说/神话分级与较前次快照的增量，可按指标/关键词/分级筛选）；用 search_thinking 在术曲思考库里按名称/UP主/BV 匹配可深度分析的曲子（拿到 bvid 后配合 analyze_song）；用 get_snapshots 查数据新鲜度（最近几次爬取的时间与收录量）。
+【子代理】复杂重活可用 delegate_task 委派给专注的子代理（persona 可选 report/researcher/statistician/translator，或自定义 system）：如撰写完整周报、多源深度调研、跨维度数据统计、歌词逐句翻译。子代理自取数并返回结论，task 需自包含；不要用它做简单查询。
 
-你还能画图谱：render_chart 支持柱状/折线/饼图/雷达/热力图/散点/关系图 graph/树图/桑基图等 ECharts 类型；当用户要「关系图/合作网络」时，先用 get_relation_graph 以某歌姬或P主为中心拿到 nodes/links/categories（含中心、歌姬、P主、歌曲四类节点与作者↔歌曲的边），再调 render_chart 用 series:[{type:'graph',layout:'force',data:nodes,links,categories,roam:true}] 渲染力导向关系图。
+【任务管理】多步任务先用 todo_write 建立待办清单（提交完整清单、整体替换；状态 pending/in_progress/completed），边做边更新、每完成一项立即标 completed，让用户看到进度。简单一步到位的任务无需用它。
 
-用户数据工具：list_favorites 是只读的（无需确认，自动执行），可查看用户收藏的歌曲（含笔记），用于「我收藏了哪些歌/我的笔记」；fav_song/unfav_song/add_note/export_report 需要用户确认后由前端执行。网易云侧除搜索/详情/歌词外，netease_comments 可查看单曲热评（先 netease_search 拿 id）。
+【准则】中文、专业简洁、先结论后依据；用工具取数并提炼要点、引关键数字，不整段复制 JSON；一次尽量一个工具，必要时串联；闲聊无需数据直接回答；引用曲子带 BV 号便于核对。"""
 
-你还可以执行两类「带权限」的操作，但它们必须先获得用户确认：
-- 用户数据操作（收藏/取消收藏/加笔记/导出报告）：你会先发起请求，由前端弹出确认，用户同意后在前端本地完成，你无需再处理返回内容。
-- 系统任务（刷新最新数据 / 重建快照 / 重算分数）：你会先发起请求，由前端弹出危险操作确认，用户同意后后端才真正执行。
+# ---------------------------------------------------------------------------
+# 子代理角色提示词（借鉴 dsh subagent 的 persona + toolFilter 模式）
+# 每个角色 = 专注的 system prompt + 默认工具白名单
+# ---------------------------------------------------------------------------
+SUBAGENT_PERSONAS = {
+    "report": {
+        "system": "你是术力口周报撰写专家。你的任务是：\n"
+                  "1. 调用 get_weekly_ranking 获取最新一期周榜 Top10（含排名、曲名、BV号、得分、播放量）\n"
+                  "2. 调用 get_insights 获取本期预警洞察（新曲首秀、排名突进、冲刺神话/传说/殿堂）\n"
+                  "3. 如有需要，调用 search_songs 补充 P主/歌姬上榜情况\n"
+                  "4. 综合以上数据，输出一份专业周报，包含：本期概览、Top10 榜单、新曲首秀、排名突进、P主/歌姬表现、值得关注。\n"
+                  "简洁专业，先结论后数据，引用带 BV 号。",
+        "tools": {"get_weekly_ranking", "get_annual_ranking", "get_legend_songs",
+                  "get_insights", "search_songs", "get_song_detail",
+                  "get_creator_stats", "get_artist_works", "list_issues"},
+    },
+    "researcher": {
+        "system": "你是术力口多源深度调研员。你的任务是：\n"
+                  "1. 对给定主题，先用 web_search + web_fetch 查站外资料（背景/人物/动态/定义）\n"
+                  "2. 用 search_songs / get_song_detail 查站内数据\n"
+                  "3. 交叉验证，确保信息准确\n"
+                  "4. 输出结构化的调研报告，标注来源链接\n"
+                  "不编造，找不到就说找不到。\n"
+                  "收敛策略：信息足以回答即立刻输出结论，不要为追求完美反复搜索；"
+                  "每次搜索要规划好关键词一次到位，尽量少的步数内完成。",
+        "tools": {"web_search", "web_fetch", "search_songs", "get_song_detail",
+                  "get_artist_works", "get_creator_stats", "translate_text"},
+    },
+    "statistician": {
+        "system": "你是术力口数据统计师。你的任务是：\n"
+                  "1. 根据用户指定的统计需求，调用对应的榜单/单曲工具获取数据\n"
+                  "2. 整理数据为表格/清单形式（纯文本，不生成图表）\n"
+                  "3. 输出摘要结论 + 详细数据\n"
+                  "精确、完整、不遗漏。",
+        "tools": {"get_weekly_ranking", "get_annual_ranking", "get_legend_songs",
+                  "get_monthly_ranking", "get_daily_ranking", "get_hot_rankings",
+                  "get_hot_momentum", "get_reentry_tracks", "get_top_by_metric",
+                  "get_song_history", "get_song_issue_rank", "get_weekly_trend",
+                  "get_pool_stats", "get_system_overview", "get_insights",
+                  "get_song_predict", "list_issues", "search_songs",
+                  "get_song_detail", "get_creator_stats", "compare_creators",
+                  "get_random_songs"},
+    },
+    "translator": {
+        "system": "你是中日歌词翻译专家。你的任务是：\n"
+                  "1. 调用 get_song_lyrics 获取歌词（先试 bvid，没有则走歌名网易云）\n"
+                  "2. 逐句/分段翻译成目标语言\n"
+                  "3. 如需要，调用 translate_text 辅助逐段翻译\n"
+                  "保持原文格式，在每句下方给出译文。",
+        "tools": {"get_song_lyrics", "translate_text", "netease_search", "netease_lyric",
+                  "search_songs", "get_song_detail", "netease_song_url"},
+    },
+}
 
-【联网与抓取能力（重要）】
-- web_search：当问题涉及「站外事实」时使用——如某首歌的创作背景/发行信息、某位 P主或歌姬的人物资料、行业动态、实时新闻、定义解释等。站内工具（周榜/年榜/单曲数据）无法回答的内容，优先用 web_search。
-- web_fetch：拿到搜索结果后，对最相关的 1–2 个链接调用 web_fetch 读取网页正文，获取更可靠、更深入的原文依据，再综合作答。
-- 多步检索是常态：可 web_search → web_fetch → 必要时再 web_search 换关键词，直到证据充分。系统最多 12 步。
-- 若联网搜索返回「当前不可用」，不要编造，直接说明无法联网，并尽可能用站内数据回答。
-
-【引用来源（必须）】
-- 任何来自联网搜索/网页抓取的内容，必须在回答中以 markdown 链接形式标注来源，例如：`初音未来是 Crypton 开发的虚拟歌手[（来源：维基百科）](https://zh.wikipedia.org/wiki/初音未来)`。
-- 一条事实可对应多个来源；来源 URL 用 web_search/web_fetch 返回的真实链接，不得杜撰。
-
-【准则】
-1. 始终用中文回答，专业、简洁、有数据支撑；先给结论再给依据。
-2. 必须先想清楚要查什么，再调用工具；绝不可编造数字，所有数据必须来自工具返回。
-3. 工具返回的是结构化数据，你应提炼成要点并引用关键数字，不要整段复制原始 JSON。
-4. 一次尽量只调一个工具；必要时多步串联（系统最多 12 步）。需要更多上下文时，先用工具取到数据再看下一步。
-5. 若用户只是闲聊或不需要数据，直接文字回答，不要强行调工具。
-6. 涉及「收藏/报告/刷新数据」等带权限操作时，先说明你要做什么、为什么，再发起工具调用；不要在用户未确认前声称已完成。
-7. 最终回答要直接、有结论；列表用 markdown 列表；如引用曲子请带上 BV 号便于核对；联网内容务必标注来源。"""
+# 不可委派给子代理的工具（子代理不能再用 delegate_task，避免无限递归）
+_SUBAGENT_FORBIDDEN_TOOLS = {"delegate_task", "fav_song", "unfav_song", "add_note",
+                             "export_report", "refresh_data", "rebuild_snapshots",
+                             "recalc_scores", "render_chart"}
 
 # 工具清单（OpenAI tools 协议，JSON Schema 描述参数）
 AGENT_TOOLS = [
@@ -1128,6 +1411,50 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_system_overview",
+            "description": "系统与数据总览（一站式状态）：真源库可读性、官方同步进度、缓存存活数、进程运行时长/累计请求/平均耗时、收录池规模。用于「系统/数据整体怎么样、后端运行状况」。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_random_songs",
+            "description": "随机发现：从收录池随机抽取若干首术曲（可按播放量下限过滤），返回标题/UP主/播放/互动/BV。用于「随机推荐几首/随便看看/发现新歌」。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "返回数量，默认 8，上限 20"},
+                    "min_view": {"type": "integer", "description": "播放量下限过滤，默认 0（不限）"},
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ---- 数据预警与洞察（只读，直接执行）----
+    {
+        "type": "function",
+        "function": {
+            "name": "get_insights",
+            "description": "数据预警与洞察中心：一次返回可操作的预警/洞察——里程碑冲刺（神话/传说/殿堂曲即将达成时预警，含进度百分比与还差多少播放）、新曲首秀（最新一期首次上榜）、排名突进（本期较上期名次上升）、数据新鲜度（最新周榜距今、是否 stale）、关键指标（曲库量/上榜数/各档曲数/冲刺预警数）。用于「有哪些歌要冲神话/传说/殿堂、本周有什么新曲、谁排名涨得最猛、数据新不新鲜」。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tier": {"type": "string", "description": "里程碑冲刺的档位筛选：myth/legend/hall，可空=全部档"},
+                    "limit": {"type": "integer", "description": "各档/各列表返回条数上限，默认 8"},
+                },
+                "required": [],
+            },
+        },
+    },
 
     # ---- 实时热度（只读，直接执行；纯文本结果回灌，前端通用渲染）----
     {
@@ -1233,6 +1560,21 @@ AGENT_TOOLS = [
                     "song_id": {"type": "string", "description": "网易云单曲 id"},
                 },
                 "required": ["song_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_song_lyrics",
+            "description": "术曲歌词获取（双通道）：优先抓 B 站 CC 字幕，其次取网易云歌词，两者命中可合并对照。传 bvid 直接抓该视频字幕（若无字幕再按歌名在网易云兜底）；只传歌名则走网易云搜索+歌词。用于「这首歌的歌词/中文翻译/唱的是什么」。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "song": {"type": "string", "description": "歌名（优先，可用于网易云搜索兜底）"},
+                    "bvid": {"type": "string", "description": "B 站 BV 号（可抓 CC 字幕），与 song 至少提供一个"},
+                },
+                "required": [],
             },
         },
     },
@@ -1420,6 +1762,24 @@ AGENT_TOOLS = [
         },
     },
 
+    # ---- 下期冲榜预测（只读，直接执行）----
+    {
+        "type": "function",
+        "function": {
+            "name": "get_song_predict",
+            "description": "下期冲榜预测：基于最近两次实时热度快照的增量，外推 7 日并套用现行官方公式，得出各曲预测得分、入榜概率、相对入榜线的余量/缺口，以及入榜线中位数与新手可能上榜的预期数量。用于「下周哪些歌能冲进周榜 Top20、谁的上涨势头最猛」。baseline 可选 auto(自动选最近基线)/prev(紧邻上一快照)/具体快照 id；decay 为热度衰减系数 0.3~1.5。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "baseline": {"type": "string", "description": "基线快照：auto / prev / 具体 snapshot id，默认 auto"},
+                    "decay": {"type": "number", "description": "热度衰减系数 0.3~1.5，默认 1.0"},
+                    "limit": {"type": "integer", "description": "返回条数上限，默认 30"},
+                },
+                "required": [],
+            },
+        },
+    },
+
     # ---- 系统任务（后端真实执行 + 需用户确认，标记 danger）----
     {
         "type": "function",
@@ -1464,6 +1824,134 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_task",
+            "description": "把重活委派给一个专注的子代理（借鉴 dsh 的 subagent：专属 persona + 窄工具集 + 深度上限）。子代理拥有自己的 system prompt 与工具白名单，独立跑完自己的工具循环后把结论文本回传。适合「写一份专业周报」「对某主题做多源深度调研」「做跨维度数据统计」「歌词逐句翻译」这类需要多步取数、会显著膨胀主对话上下文的任务。子代理只能使用只读+联网工具，看不到主对话上下文，task 必须自包含。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "persona": {
+                        "type": "string",
+                        "enum": ["report", "researcher", "statistician", "translator"],
+                        "description": "内置角色：report=周报/榜单分析师；researcher=多源深度调研员；statistician=数据统计师；translator=中日歌词翻译。与 system 二选一，persona 优先。",
+                    },
+                    "system": {
+                        "type": "string",
+                        "description": "自定义子代理 system prompt（内置 persona 不适用时使用）。",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "交给子代理的具体任务描述，必须自包含（子代理看不到主对话上下文，需写明取数对象与输出要求）。",
+                    },
+                    "tools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "允许子代理使用的工具名白名单；省略则自动放开全部只读+联网工具（client/danger/chart/delegate 工具子代理不可用）。",
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "description": "子代理最大工具循环步数（1~6，默认 3）。",
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_job",
+            "description": "启动一个后台任务（Jobs，借鉴 dsh 的运行时任务管理），提交后立即返回 job id，可再用 get_job/list_jobs 查看进度。任务在服务端后台线程执行，不阻塞当前对话。可用任务：sync_official（同步官方榜单，可选 types/songs/rebuild_monthly）、refresh_data（触发实时热度采集并监控到完成，可选 scope/recent_n）、recalc_scores（按现行公式批量重算榜单，可选 board_type/top）、translate_all（用免费 Google 接口批量翻译全部歌曲，可选 target=[zh,en]/sleep 限速）。写库类任务需用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["sync_official", "refresh_data", "recalc_scores", "translate_all"],
+                        "description": "任务类型。sync_official=同步官方榜单；refresh_data=实时热度采集；recalc_scores=批量重算；translate_all=批量翻译全部歌曲。",
+                    },
+                    "args": {
+                        "type": "object",
+                        "description": "任务参数（透传给 runner）：sync_official 支持 types(s)/songs/rebuild_monthly；refresh_data 支持 scope/recent_n；recalc_scores 支持 board_type/top；translate_all 支持 target/sleep。",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_job",
+            "description": "查询后台任务状态与输出：状态（pending/running/stopping/completed/killed/failed）、最新日志、错误、结果摘要。用于「任务跑到哪了/同步完成了吗」。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "任务 id（start_job 返回）。"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_jobs",
+            "description": "列出最近的后台任务（按创建时间倒序），含每个任务的状态与 id。用于「有哪些任务在跑/最近跑过什么」。只读，秒回。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "返回条数，默认 10，上限 20。"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_job",
+            "description": "请求取消一个正在运行/等待中的后台任务（置 stopping，任务在批次间退出）。已结束的任务不可取消。返回是否已受理取消。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "任务 id。"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "todo_write",
+            "description": "记录并更新当前任务的待办清单（借鉴 dsh 的 todo 机制）。每次调用必须提交【完整】清单，它会整体替换上一次清单（无局部更新、无单项编辑）。适合规划多步工作并向用户展示进度：开始前为每个具体步骤建一条 todo；推进时把正在做的标为 in_progress；每完成一项立即标为 completed（不要攒着批量标）。状态：pending（未开始）/ in_progress（进行中）/ completed（已完成）。简单一步到位的任务可跳过本工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "完整的待办清单（替换上一次清单）。每项含 content 与 status。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "任务描述（简短祈使句）。"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "pending=未开始；in_progress=进行中；completed=已完成。",
+                                },
+                            },
+                            "required": ["content", "status"],
+                        },
+                    }
+                },
+                "required": ["todos"],
+            },
+        },
+    },
 ]
 
 # 工具权限分类：
@@ -1472,7 +1960,7 @@ AGENT_TOOLS = [
 CLIENT_TOOLS = {"fav_song", "unfav_song", "add_note", "export_report", "list_favorites"}
 # 只读 client 工具：前端自动执行、无需用户确认
 CLIENT_READONLY_TOOLS = {"list_favorites"}
-DANGER_TOOLS = {"refresh_data", "rebuild_snapshots", "recalc_scores"}
+DANGER_TOOLS = {"refresh_data", "rebuild_snapshots", "recalc_scores", "start_job"}
 # 生成式图表：由模型产出 ECharts option，后端透传给前端渲染，无需确认、不直接执行。
 CHART_TOOLS = {"render_chart"}
 
@@ -1481,6 +1969,7 @@ _RISK_DESC = {
     "refresh_data": "将触发后端重新采集实时数据（依赖网络、较耗时），可能更新 hot_cache 与快照。受限网络下可能部分失败。",
     "rebuild_snapshots": "将重建实时热度快照（写库），新增 snapshot_stats 记录。依赖 hot_cache 中已有数据。",
     "recalc_scores": "将用现行公式重算分数并返回对比报告（只读，不强制改库）。",
+    "start_job": "将启动一个后台任务（sync_official 同步官方榜单 / refresh_data 实时热度采集 / recalc_scores 批量重算 / translate_all 批量翻译全部歌曲）。可能写库并耗时较长；提交后可随时用 get_job 查看进度、cancel_job 取消。",
 }
 
 
@@ -1496,6 +1985,76 @@ def _truncate(text: str, n: int = 4000) -> str:
     if len(text) <= n:
         return text
     return text[: n - 60] + f"\n…（结果已截断，共 {len(text)} 字）"
+
+
+# ---------------------------------------------------------------------------
+# 结构化错误码（借鉴 dsh 的 {code, message} 工具错误契约）
+# 工具失败时返回 `{"error":{"code":..,"message":..}}`：
+#   - 前端可按 code 路由差异化提示（tool_error 事件），也可在日志/监控里机器分类；
+#   - 模型侧看到的是统一格式的错误对象，能据此判断「参数错了 / 数据没了 / 网络挂了」。
+# ---------------------------------------------------------------------------
+class AgentErrCode:
+    TOOL_INVALID_ARGS = "tool_invalid_args"        # 模型给的参数不是合法 JSON / 类型错误
+    TOOL_EXECUTION_FAILED = "tool_execution_failed"  # 工具内部抛异常（详见 message）
+    TOOL_NOT_FOUND = "tool_not_found"              # 模型调用了不存在的工具
+    DATA_UNAVAILABLE = "data_unavailable"          # 数据缺失 / 库里没有
+    NETWORK_ERROR = "network_error"                # 联网工具失败（网络受限/风控）
+
+
+def _tool_error(code: str, message: str) -> str:
+    """构造结构化工具错误文本（既回灌模型，又被 run_agent 解析成 tool_error 事件）。"""
+    return json.dumps({"error": {"code": code, "message": message}}, ensure_ascii=False)
+
+
+def _parse_tool_error(result_text: str) -> dict | None:
+    """若工具结果形如 {"error":{code,message}}，解析为 {code,message}；否则返回 None。"""
+    if not result_text or not result_text.lstrip().startswith("{"):
+        return None
+    try:
+        obj = json.loads(result_text)
+    except Exception:  # noqa: BLE001
+        return None
+    err = obj.get("error") if isinstance(obj, dict) else None
+    if isinstance(err, dict) and isinstance(err.get("code"), str):
+        return {"code": err["code"], "message": str(err.get("message") or err["code"])}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Todo 待办清单（借鉴 dsh 的 tool-todo：整表替换 + last-write-wins）
+# 模型每次调用 todo_write 提交「完整」清单，替换上一次清单；run_agent 将最新清单
+# 以 todo 事件透传前端渲染进度条。清单内容由模型在上下文里携带（assistant 的
+# tool_calls 参数即完整快照），因此跨步/跨对话可自然延续，无需服务端会话存储。
+# ---------------------------------------------------------------------------
+TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
+def _tool_todo_write(args: dict, todos: list[dict]) -> list[dict]:
+    """解析模型提交的完整待办清单并整体替换。无效项丢弃，状态非法则归为 pending。"""
+    raw = args.get("todos")
+    if not isinstance(raw, list):
+        return todos
+    out: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        status = item.get("status")
+        if status not in TODO_STATUSES:
+            status = "pending"
+        out.append({"id": f"t{i + 1}", "content": content[:120], "status": status})
+    return out
+
+
+def _todo_summary(todos: list[dict]) -> str:
+    """给模型的简短回灌（不把整表 JSON 塞回上下文，控制 token）。"""
+    if not todos:
+        return "（待办清单已清空）"
+    done = sum(1 for t in todos if t["status"] == "completed")
+    prog = sum(1 for t in todos if t["status"] == "in_progress")
+    return f"已更新待办清单（共 {len(todos)} 项：{done} 完成 / {prog} 进行中 / {len(todos) - done - prog} 待办）。"
 
 
 def _fmt_issue_ranking(items: list[dict], board_label: str) -> str:
@@ -1767,10 +2326,78 @@ def _web_duckduckgo(query: str, n: int, sources: list | None) -> str:
         return f"DuckDuckGo 搜索失败：{exc}（本网络可能屏蔽了外网搜索）"
 
 
+def _web_deepseek(query: str, n: int, sources: list | None) -> str:
+    """DeepSeek 原生搜索（参考 dsh web-search-deepseek provider）。
+
+    不依赖任何第三方搜索 API：走 DeepSeek 的 Anthropic 兼容端点 /anthropic/v1/messages，
+    请求体里带服务端工具 web_search_20250305，由 DeepSeek 服务端自行执行搜索，
+    返回 web_search_tool_result 内容块（URL/标题/页面年龄），并在 text 块的
+    citations 里附带引用片段。复用 AI_API_KEY，无需额外配置。
+    """
+    key = os.environ.get("AI_API_KEY", "")
+    if not key or key == "not-needed":
+        return ("未配置 AI_API_KEY，无法使用 DeepSeek 原生搜索"
+                "（请在 backend/.env 配置云端 DeepSeek key）。")
+    base = os.environ.get("DEEPSEEK_SEARCH_BASE_URL",
+                          "https://api.deepseek.com/anthropic/v1").rstrip("/")
+    body = {
+        "model": AI_MODEL,
+        "max_tokens": 1024,
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "text", "text": f"Perform a web search for the query: {query}"}],
+        }],
+        # 服务端工具：DeepSeek 服务端执行搜索，返回可引用的结构化结果
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": max(1, n)}],
+    }
+    r = httpx.post(
+        f"{base}/messages",
+        headers={
+            "x-api-key": key,
+            "authorization": f"Bearer {key}",
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "accept": "application/json",
+        },
+        json=body,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return f"DeepSeek 原生搜索请求失败（HTTP {r.status_code}）：{r.text[:200]}"
+    data = r.json()
+    blocks = data.get("content") or []
+    # 先从 text 块收集 citations（url → 引用片段），再组装结果项
+    snippets: dict[str, str] = {}
+    for b in blocks:
+        if b.get("type") == "text":
+            for c in (b.get("citations") or []):
+                url = c.get("url") or ""
+                cited = (c.get("cited_text") or "").strip()
+                if url and cited:
+                    snippets.setdefault(url, cited)
+    items: list[dict] = []
+    for b in blocks:
+        if b.get("type") != "web_search_tool_result":
+            continue
+        for it in (b.get("content") or []):
+            url = it.get("url") or ""
+            if not url:
+                continue
+            items.append({
+                "title": it.get("title") or "",
+                "url": url,
+                "content": snippets.get(url) or it.get("page_age") or "",
+            })
+    if not items:
+        return "DeepSeek 原生搜索未返回结果（请求可能未触发原生搜索）。"
+    return _fmt_web(items[:n], "DeepSeek", sources)
+
+
 def _tool_web_search(query: str | None, max_results: int = 5, sources: list | None = None) -> str:
     """联网搜索（可插拔 provider）。
 
     通过环境变量 WEB_SEARCH_PROVIDER 选择后端：
+      deepseek → DeepSeek 原生搜索（走 /anthropic/v1/messages，复用 AI_API_KEY，无需第三方 key）
       tavily  → Tavily API（AI 原生，需 TAVILY_API_KEY）
       brave   → Brave Search API（独立索引，需 BRAVE_API_KEY）
       exa     → Exa API（语义检索，需 EXA_API_KEY）
@@ -1782,6 +2409,8 @@ def _tool_web_search(query: str | None, max_results: int = 5, sources: list | No
         return "缺少 query 参数"
     provider = os.environ.get("WEB_SEARCH_PROVIDER", "").lower()
     try:
+        if provider == "deepseek":
+            return _web_deepseek(query, int(max_results or 5), sources)
         if provider == "tavily":
             return _web_tavily(query, int(max_results or 5), sources)
         if provider == "brave":
@@ -1868,8 +2497,13 @@ def _tool_compare_issues(board_type: str | None = None, issue_a: str | None = No
         up, down, new, out = [], [], [], []
         for bvid, it in ra.items():
             if bvid in rb:
-                d = (rb[bvid].get("rank") or 0) - (it.get("rank") or 0)
-                (up if d > 0 else down).append((it, abs(d)))
+                old_rank = it.get("rank") or 0
+                new_rank = rb[bvid].get("rank") or 0
+                d = new_rank - old_rank  # 名次数字变大 = 排名下降，方向不可反
+                if d > 0:
+                    down.append((it, d, new_rank))
+                elif d < 0:
+                    up.append((it, -d, new_rank))
             else:
                 new.append(it)
         for bvid, it in rb.items():
@@ -1877,11 +2511,11 @@ def _tool_compare_issues(board_type: str | None = None, issue_a: str | None = No
                 out.append(it)
         lines = [f"{bt} 对比：第 {ka} 期 vs 第 {kb} 期（各 {len(ra)}/{len(rb)} 首）"]
         up.sort(key=lambda x: -x[1])
-        for it, d in up[:5]:
-            lines.append(f"↑ {it.get('title_cn') or it.get('title')}（{it['bvid']}）升 {d} 名 → 第{it.get('rank')}名")
+        for it, d, new_rank in up[:5]:
+            lines.append(f"↑ {it.get('title_cn') or it.get('title')}（{it['bvid']}）升 {d} 名 → 第{new_rank}名")
         down.sort(key=lambda x: -x[1])
-        for it, d in down[:5]:
-            lines.append(f"↓ {it.get('title_cn') or it.get('title')}（{it['bvid']}）降 {d} 名 → 第{it.get('rank')}名")
+        for it, d, new_rank in down[:5]:
+            lines.append(f"↓ {it.get('title_cn') or it.get('title')}（{it['bvid']}）降 {d} 名 → 第{new_rank}名")
         if new:
             lines.append("新进榜：" + "、".join(f"{it.get('title_cn') or it.get('title')}" for it in new[:5]))
         if out:
@@ -2223,25 +2857,68 @@ def _tool_creator_stats(name: str | None, role: str = "producer") -> str:
         conn.close()
 
 
-def _tool_song_compare(bvid_a: str | None, bvid_b: str | None) -> str:
+# 两曲对比的可视化指标（顺序即展示顺序，键为 think_detail 返回字段）
+_SONG_COMPARE_METRICS = [
+    ("播放", "view"),
+    ("点赞", "like"),
+    ("投币", "coin"),
+    ("收藏", "favorite"),
+    ("评论", "reply"),
+    ("弹幕", "danmaku"),
+    ("分享", "share"),
+]
+
+
+def _song_compare_data(bvid_a: str | None, bvid_b: str | None) -> tuple[str, dict | None]:
+    """两曲实时互动对比：返回 (文本结果, ECharts 分组柱状图 option)。
+
+    文本回灌给模型作答；option 供前端自动渲染，避免模型忘了调 render_chart。
+    数值量级差异大（播放上千万 vs 分享几万），y 轴用对数刻度保证小指标可读。
+    """
     if not bvid_a or not bvid_b:
-        return "缺少 bvid_a 或 bvid_b 参数"
+        return "缺少 bvid_a 或 bvid_b 参数", None
     da = _crawler.think_detail(bvid_a)
     db_ = _crawler.think_detail(bvid_b)
     if not da:
-        return f"未找到 {bvid_a} 的实时数据"
+        return f"未找到 {bvid_a} 的实时数据", None
     if not db_:
-        return f"未找到 {bvid_b} 的实时数据"
+        return f"未找到 {bvid_b} 的实时数据", None
 
-    def row(d: dict, tag: str) -> str:
-        v = d.get("view") or 0
+    name_a = da.get("title_cn") or da.get("title") or da.get("bvid") or "曲A"
+    name_b = db_.get("title_cn") or db_.get("title") or db_.get("bvid") or "曲B"
+
+    def row(d: dict) -> str:
         return (
-            f"【{tag}】{d.get('title_cn') or d.get('title')}（{d.get('bvid')}）\n"
-            f"  播放 {_fmt_cn(v)}｜点赞 {_fmt_cn(d.get('like'))}｜投币 {_fmt_cn(d.get('coin'))}｜收藏 {_fmt_cn(d.get('favorite'))}\n"
+            f"  播放 {_fmt_cn(d.get('view'))}｜点赞 {_fmt_cn(d.get('like'))}｜投币 {_fmt_cn(d.get('coin'))}｜收藏 {_fmt_cn(d.get('favorite'))}\n"
             f"  评论 {_fmt_cn(d.get('reply'))}｜弹幕 {_fmt_cn(d.get('danmaku'))}｜分享 {_fmt_cn(d.get('share'))}"
         )
 
-    return "两首术曲实时数据对比：\n" + row(da, "A") + "\n" + row(db_, "B")
+    text = (
+        "两首术曲实时数据对比：\n"
+        f"【A】{name_a}（{da.get('bvid')}）\n{row(da)}\n"
+        f"【B】{name_b}（{db_.get('bvid')}）\n{row(db_)}"
+    )
+
+    labels = [m[0] for m in _SONG_COMPARE_METRICS]
+    values_a = [da.get(k) or 0 for _, k in _SONG_COMPARE_METRICS]
+    values_b = [db_.get(k) or 0 for _, k in _SONG_COMPARE_METRICS]
+    option = {
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": [name_a, name_b], "top": 0},
+        "grid": {"left": 56, "right": 16, "top": 34, "bottom": 8, "containLabel": True},
+        "xAxis": {"type": "category", "data": labels},
+        "yAxis": {"type": "log", "name": "数值（对数）"},
+        "series": [
+            {"name": name_a, "type": "bar", "data": values_a, "barMaxWidth": 26},
+            {"name": name_b, "type": "bar", "data": values_b, "barMaxWidth": 26},
+        ],
+    }
+    return text, option
+
+
+def _tool_song_compare(bvid_a: str | None, bvid_b: str | None) -> str:
+    text, _ = _song_compare_data(bvid_a, bvid_b)
+    return text
 
 
 def _tool_explain_song_score(bvid: str | None, board_type: str = "weekly") -> str:
@@ -2449,6 +3126,142 @@ def _tool_system_status() -> str:
     return "\n".join(lines)
 
 
+def _tool_system_overview() -> str:
+    """系统总览：一站式给出数据健康、各库状态、缓存与新鲜度，供「系统/数据整体怎么样」类问题。"""
+    from app.core import cache as _cache_mod
+    from app.core import db as _dbmod
+    from app.core import stats as _rt
+    from app.services import sync_runner as _sync
+
+    lines = ["系统与数据总览："]
+    src = _dbmod.db_stats().get("source", {})
+    lines.append(f"- 真源库：{'可读' if src.get('readable') else '不可读'}（大小 {src.get('size_bytes') or 0} B）")
+    st = _sync.get_status()
+    summary = st.get("summary") or {}
+    boards = summary.get("boards") or {}
+    if st.get("running"):
+        lines.append("- 官方同步：进行中…")
+    elif boards:
+        up = [k for k, v in boards.items() if v.get("up_to_date")]
+        lines.append(f"- 官方榜：{len(up)}/{len(boards)} 已同步最新（{', '.join(up) or '无'}）")
+    else:
+        lines.append("- 官方同步：无历史记录")
+    cache_info = _cache_mod.cache_stats()
+    lines.append(f"- 缓存：{cache_info.get('live', 0)} 条存活 / {cache_info.get('total', 0)} 条")
+    rt = _rt.snapshot()
+    lines.append(f"- 运行：已运行 {int(rt.get('uptime_s', 0) // 60)} 分钟 · 累计请求 {rt.get('requests', {}).get('total', 0)} · 平均 {rt.get('avg_ms', 0)} ms")
+    conn = _db.connect_source()
+    try:
+        total = conn.execute("SELECT COUNT(*) c FROM songs_all").fetchone()["c"]
+    finally:
+        conn.close()
+    lines.append(f"- 收录池：{total} 首")
+    return "\n".join(lines)
+
+
+def _tool_random_songs(limit: int = 8, min_view: int = 0) -> str:
+    """随机发现：从收录池随机抽取若干首，用于「随机推荐/发现新歌」。"""
+    try:
+        limit = max(1, min(int(limit or 8), 20))
+    except (TypeError, ValueError):
+        limit = 8
+    conn = _db.connect_source()
+    try:
+        rows = conn.execute(
+            "SELECT bvid, title, title_cn, producers, vocalists, pubtime FROM songs_all "
+            "ORDER BY RANDOM() LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return "随机发现：收录池为空。"
+
+    def _names(raw) -> str:
+        if not raw:
+            return "未知"
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return "未知"
+        if isinstance(data, list):
+            names = [d.get("name") for d in data if isinstance(d, dict) and d.get("name")]
+            return ", ".join(names) if names else "未知"
+        return str(data)
+
+    lines = [f"随机发现（共 {len(rows)} 首）："]
+    for i, r in enumerate(rows, 1):
+        lines.append(
+            f"{i}. {r['title_cn'] or r['title']}（制作 {_names(r['producers'])} · 歌姬 {_names(r['vocalists'])}）｜BV {r['bvid']}"
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 数据预警与洞察工具（只读，直接执行；纯文本结果回灌，前端通用渲染）
+# ---------------------------------------------------------------------------
+def _tool_insights(tier: str | None = None, limit: int = 8) -> str:
+    from app.services import insights as _insights
+    conn = _db.connect_source()
+    try:
+        ov = _insights.overview(conn)
+    finally:
+        conn.close()
+    lines: list[str] = []
+
+    fresh = ov.get("freshness") or {}
+    latest = fresh.get("latest_weekly_issue")
+    age = fresh.get("age_days")
+    stale = fresh.get("stale")
+    if latest:
+        lines.append(f"数据新鲜度：最新周榜 {latest}，距今 {age} 天{'（⚠️ 已过期，建议刷新）' if stale else '（正常）'}。")
+    else:
+        lines.append("数据新鲜度：暂无周榜数据。")
+
+    kpis = ov.get("kpis") or {}
+    tc = kpis.get("tier_counts") or {}
+    shots = kpis.get("milestone_shots") or {}
+    lines.append(
+        f"关键指标：曲库 {kpis.get('songs_total', 0)} 首；最新期上榜 {kpis.get('board_count', 0)} 首；"
+        f"神话曲 {tc.get('myth', 0)} / 传说曲 {tc.get('legend', 0)} / 殿堂曲 {tc.get('hall', 0)}；"
+        f"冲刺预警中 {shots.get('myth', 0) + shots.get('legend', 0) + shots.get('hall', 0)} 首。"
+    )
+
+    tiers = [tier] if tier in ("myth", "legend", "hall") else ["myth", "legend", "hall"]
+    for tk in tiers:
+        items = (ov.get("milestones") or {}).get(tk, [])
+        if not items:
+            continue
+        label = {"myth": "神话曲", "legend": "传说曲", "hall": "殿堂曲"}[tk]
+        lines.append(f"{label}冲刺预警：")
+        for it in items[: int(limit or 8)]:
+            prod = "/".join(it.get("producers") or []) or "—"
+            lines.append(
+                f"- {it.get('title')}（{prod}）：播放 {it.get('view', 0):,}，"
+                f"进度 {it.get('progress', 0) * 100:.1f}%，距 {label} 还差 {it.get('remain', 0):,}"
+            )
+
+    nc = ov.get("newcomers") or {}
+    nc_items = nc.get("items") or []
+    if nc_items:
+        lines.append(f"新曲首秀（{nc.get('issue') or '最新一期'}）：")
+        for n in nc_items[: int(limit or 8)]:
+            lines.append(f"- 第{n.get('rank')}名 {n.get('title')}")
+    else:
+        lines.append("新曲首秀：本期无首次上榜新曲。")
+
+    sg = ov.get("surges") or {}
+    sg_items = sg.get("items") or []
+    if sg_items:
+        lines.append(f"排名突进（{sg.get('cur_issue')} vs {sg.get('prev_issue')}）：")
+        for s in sg_items[: int(limit or 8)]:
+            lines.append(f"- {s.get('title')}：第{s.get('prev_rank')}名 → 第{s.get('rank')}名（↑{s.get('gain')}）")
+    else:
+        lines.append("排名突进：两期之间无显著突进。")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # 实时热度工具（只读，直接执行；纯文本结果回灌，前端通用渲染）
 # ---------------------------------------------------------------------------
@@ -2539,6 +3352,47 @@ def _tool_snapshots(limit: int = 10) -> str:
     for it in items:
         lines.append(
             f"- 快照#{it.get('id')} ｜ {it.get('scope')} ｜ {it.get('count')} 首 ｜ {it.get('created_at')}"
+        )
+    return "\n".join(lines)
+
+
+def _tool_song_predict(baseline: str = "auto", decay: float = 1.0, limit: int = 30) -> str:
+    """下期冲榜预测：基于快照增量外推 7 日 + 现行公式 + 历史入榜线，返回预测榜文本。"""
+    try:
+        limit = max(1, min(int(limit or 30), 100))
+    except (TypeError, ValueError):
+        limit = 30
+    try:
+        decay = max(0.3, min(float(decay or 1.0), 1.5))
+    except (TypeError, ValueError):
+        decay = 1.0
+    from . import predict as predict_svc
+    conn = _db.connect_source()
+    try:
+        r = predict_svc.next_week(conn, baseline=baseline or "auto", decay_k=decay, limit=limit)
+    finally:
+        conn.close()
+    if not r.get("ok"):
+        return f"预测不可用：{r.get('reason') or '快照不足'}"
+    s = r.get("summary") or {}
+    cut = r.get("cutline") or {}
+    lines = [
+        "下期冲榜预测（基于快照增量外推 7 日，套用现行公式）：",
+        f"- 入榜线（近 {cut.get('lookback', 0)} 期末位中位数）：{cut.get('median')} 分（区间 {cut.get('min')}~{cut.get('max')}）",
+        f"- 窗口 {s.get('window_days')} 天 · 追踪 {s.get('tracked')} 首 · 预计上榜 {s.get('expected_in')} 首 · 新手入 Top{s.get('board_size')} {s.get('newcomers_in_top')} 首",
+        f"- 衰减系数 k={s.get('decay_k')} · 公式：{s.get('formula')}",
+        "",
+        "预测榜（按预测得分降序）：",
+    ]
+    for it in r.get("items") or []:
+        flag = ""
+        if it.get("on_last_board"):
+            flag = f"（上期第{it.get('last_rank')}）"
+        status = "✅预计入榜" if (it.get("prob") or 0) >= 0.5 else "（概率不足）"
+        lines.append(
+            f"{it.get('pred_rank', '?')}. {it.get('title_cn') or it.get('title')} ｜ {it.get('owner') or ''}"
+            f"{flag} ｜ 预测分 {it.get('pred_score')} ｜ 入榜概率 {int((it.get('prob') or 0) * 100)}% {status}"
+            f" ｜ 余量 {it.get('margin') or 0}"
         )
     return "\n".join(lines)
 
@@ -2718,6 +3572,118 @@ def _tool_netease_lyric(song_id: str | None) -> str:
     return head + "\n" + "\n".join(body)
 
 
+def _bili_subtitle_subprocess(bvid: str) -> dict:
+    """用独立子进程抓 B 站 CC 字幕（与 songs.py 的 view 抓取同一出口）。
+
+    返回 {ok, subtitle, lang, msg}。字幕可能为 None（该视频未开字幕）。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c",
+             "from app.services import bili_fetch_cli; bili_fetch_cli.main()",
+             "subtitle", bvid],
+            cwd=backend_dir,
+            capture_output=True, text=True, timeout=45,
+        )
+        out = (res.stdout or "").strip()
+        if not out:
+            return {"ok": False, "msg": "子进程无输出"}
+        line = out.splitlines()[-1]
+        obj = json.loads(line)
+        if obj.get("code") != 0 or obj.get("subtitle"):
+            return {
+                "ok": True,
+                "subtitle": obj.get("subtitle") or [],
+                "lang": obj.get("lang"),
+                "msg": obj.get("msg"),
+            }
+        return {"ok": True, "subtitle": None, "msg": obj.get("msg") or "无字幕"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "msg": str(exc)}
+
+
+def _tool_get_song_lyrics(song: str | None, bvid: str | None) -> str:
+    """双通道歌词获取：优先 B 站 CC 字幕，其次网易云歌词；两者皆可则合并。
+
+    - 传 bvid：直接抓该视频字幕；若无字幕再尝试网易云按歌名搜歌词。
+    - 只传 song：先按歌名在网易云搜索取 id，再拉歌词。
+    命中歌词返回原文（B 站字幕去重、网易云按时间戳逐行），并标注来源。
+    """
+    if not song and not bvid:
+        return "缺少参数：请提供歌名（song）或 BV 号（bvid）"
+
+    parts: list[str] = []
+    bili_lines: list[str] | None = None
+    netease_lines: list[str] | None = None
+    netease_note = ""
+
+    # 通道 1：B 站 CC 字幕
+    if bvid:
+        r = _bili_subtitle_subprocess(bvid)
+        if r.get("ok") and r.get("subtitle"):
+            # 去重：CC 字幕每句可能重复出现，保序去重
+            seen: set[str] = set()
+            for ln in r["subtitle"]:
+                s = ln.strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    bili_lines = (bili_lines or []) + [s]
+            lang = r.get("lang") or ""
+            parts.append(f"【B站 CC 字幕】BV {bvid}" + (f"（{lang}）" if lang else ""))
+        elif r.get("ok") and not r.get("subtitle"):
+            parts.append(f"（B站 BV {bvid} 无 CC 字幕：{r.get('msg') or '未开字幕'}）")
+
+    # 通道 2：网易云歌词
+    netease_song_id: str | None = None
+    if song:
+        try:
+            res = _netease.search(song, stype="song", limit=5)
+            items = res.get("items") or []
+            if items:
+                netease_song_id = str(items[0].get("id"))
+                netease_note = f"（命中网易云「{items[0].get('name')}」）"
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"（网易云搜索失败：{exc}）")
+    if not netease_song_id and bvid:
+        # 只有 bvid 时尝试用 BV 号关联不到网易云 id，跳过歌词通道
+        netease_song_id = None
+    if netease_song_id:
+        try:
+            d = _netease.get_lyric(netease_song_id)
+            if d and (d.get("lines") or []):
+                lines = d.get("lines") or []
+                head = f"【网易云歌词】id {netease_song_id}{netease_note}"
+                if d.get("has_translation"):
+                    head += "（含中文翻译）"
+                parts.append(head)
+                body = []
+                for ln in lines[:80]:
+                    if ln.get("tl"):
+                        body.append(f"{ln.get('text')}  /  {ln.get('tl')}")
+                    else:
+                        body.append(ln.get("text"))
+                netease_lines = body
+            elif d is not None:
+                parts.append(f"（网易云 id={netease_song_id} 暂无歌词文本）")
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"（网易云歌词获取失败：{exc}）")
+
+    if bili_lines:
+        parts.append("—— 歌词正文 ——")
+        parts.extend(bili_lines[:120])
+    if bili_lines and netease_lines:
+        parts.append("—— 网易云对照（B 站无字幕的部分可参考） ——")
+        parts.extend(netease_lines)
+    elif netease_lines and not bili_lines:
+        parts.append("—— 歌词正文 ——")
+        parts.extend(netease_lines)
+
+    if not bili_lines and not netease_lines:
+        return "\n".join(parts) if parts else f"未能获取「{song or bvid}」的歌词（B 站无字幕且网易云未命中）"
+    return "\n".join(parts)
+
+
 def _tool_netease_artist(artist_id: str | None) -> str:
     if not artist_id:
         return "缺少 artist_id 参数"
@@ -2857,8 +3823,9 @@ def _tool_recalc_scores(board_type: str | None = None, issue: str | None = None)
             return f"{bt} 第 {key} 期无数据"
         recalced = _boards._recalc(items, bt, key)
         lines = [f"{bt} 第 {key} 期 Top10 新旧分数对比（现行公式）："]
+        # _recalc 原地写入 self_score 并返回同一列表，故新旧对比应取 new 的 self_score（官方 score 两列相同无意义）。
         for old, new in zip(items, recalced):
-            lines.append(f"- {old.get('title_cn') or old.get('title')}：原 {old.get('score')} → 新 {new.get('score')}")
+            lines.append(f"- {old.get('title_cn') or old.get('title')}：官方 {old.get('score')} → 自算 {new.get('self_score')}")
         lines.append("（此为只读报告，未改动数据库）")
         return "\n".join(lines)
     finally:
@@ -2870,11 +3837,15 @@ def _execute_tool(name: str, args_str: str, sources: list | None = None) -> str:
     注意：client 工具（收藏/笔记/导出）与 danger 工具（刷新/重建/重算）不在此处执行，
     由 run_agent 分流处理（前者前端执行、后者需用户确认后执行）。
     sources：联网类工具（web_search/web_fetch）会把来源写入该列表，供上层回传前端展示。"""
-    try:
-        args = json.loads(args_str) if args_str else {}
-        if not isinstance(args, dict):
-            args = {}
-    except json.JSONDecodeError:
+    if args_str:
+        try:
+            args = json.loads(args_str)
+            if not isinstance(args, dict):
+                args = {}
+        except json.JSONDecodeError:
+            return _tool_error(AgentErrCode.TOOL_INVALID_ARGS,
+                               f"工具 {name} 的参数不是合法 JSON：{args_str[:120]}")
+    else:
         args = {}
     try:
         if name == "get_weekly_ranking":
@@ -2940,6 +3911,15 @@ def _execute_tool(name: str, args_str: str, sources: list | None = None) -> str:
             return _truncate(_tool_compare_creators(args.get("name_a"), args.get("name_b"), args.get("role")))
         if name == "get_system_status":
             return _truncate(_tool_system_status())
+        if name == "get_system_overview":
+            return _truncate(_tool_system_overview())
+        if name == "get_random_songs":
+            return _truncate(_tool_random_songs(args.get("limit"), args.get("min_view")))
+        if name == "get_insights":
+            return _truncate(_tool_insights(args.get("tier"), args.get("limit")))
+        # 下期冲榜预测（只读，直接执行）
+        if name == "get_song_predict":
+            return _truncate(_tool_song_predict(args.get("baseline"), args.get("decay"), args.get("limit")))
         # 实时热度（只读，直接执行）
         if name == "get_hot_momentum":
             return _truncate(_tool_hot_momentum(args.get("metric"), args.get("limit")))
@@ -2958,6 +3938,8 @@ def _execute_tool(name: str, args_str: str, sources: list | None = None) -> str:
             return _truncate(_tool_netease_song(args.get("song_id")))
         if name == "netease_lyric":
             return _truncate(_tool_netease_lyric(args.get("song_id")))
+        if name == "get_song_lyrics":
+            return _truncate(_tool_get_song_lyrics(args.get("song"), args.get("bvid")))
         if name == "netease_artist":
             return _truncate(_tool_netease_artist(args.get("artist_id")))
         if name == "netease_album":
@@ -2975,14 +3957,295 @@ def _execute_tool(name: str, args_str: str, sources: list | None = None) -> str:
             return _truncate(_tool_rebuild_snapshots(args.get("scope")))
         if name == "recalc_scores":
             return _truncate(_tool_recalc_scores(args.get("board_type"), args.get("issue")))
-        return f"未知工具：{name}"
+        # 子代理委派（只读执行：子代理只能跑只读+联网工具，自身不产生副作用）
+        if name == "delegate_task":
+            return _truncate(_tool_delegate_task(args), 16000)
+        # 后台任务 Jobs（参考 dsh jobs 子系统：生命周期/取消/输出分片）
+        if name == "start_job":
+            return _truncate(_tool_start_job(args), 4000)
+        if name == "get_job":
+            return _truncate(_tool_get_job(args.get("id")))
+        if name == "list_jobs":
+            return _truncate(_tool_list_jobs(args.get("limit")))
+        if name == "cancel_job":
+            return _truncate(_tool_cancel_job(args.get("id")))
+        return _tool_error(AgentErrCode.TOOL_NOT_FOUND, f"未知工具：{name}")
     except Exception as exc:  # noqa: BLE001
         logger.exception("tool %s failed", name)
-        return f"工具执行出错：{exc}"
+        return _tool_error(AgentErrCode.TOOL_EXECUTION_FAILED, f"工具执行出错：{exc}")
+
+
+# ---------------------------------------------------------------------------
+# 子代理委派（delegate_task）
+#
+# 借鉴 dsh 的 subagent seam，把「重活」交给一个专注的子代理：
+#   - persona   -> SUBAGENT_PERSONAS 里的角色 system prompt（子代理专属上下文）
+#   - toolFilter-> 窄工具白名单（默认取角色自带 tools，未命中则全部只读+联网）
+#   - depth     -> max_steps（子代理自己的工具循环步数上限）
+# 子代理用非流式 ReAct 小循环跑完自己的任务，把结论文本回灌给主代理。
+# 好处：主对话上下文不被多步取数撑大；每类子代理的前缀（persona+窄工具）稳定，
+#       对 KV 缓存友好（复用 dsh 的「前缀稳定 → 缓存命中」思路）。
+# ---------------------------------------------------------------------------
+def _sub_tools(tool_names: list[str] | None) -> list[dict]:
+    """按名字过滤 AGENT_TOOLS 得到子代理可用工具（toolFilter）。"""
+    if tool_names:
+        allowed = {t for t in tool_names if t not in _SUBAGENT_FORBIDDEN_TOOLS}
+        if allowed:
+            return [t for t in AGENT_TOOLS if t["function"]["name"] in allowed]
+    # 未指定或全被过滤：默认放开全部只读 + 联网工具（排除 client/danger/chart/delegate）
+    return [t for t in AGENT_TOOLS if t["function"]["name"] not in _SUBAGENT_FORBIDDEN_TOOLS]
+
+
+def _chat_once_tools(messages: list[dict], tools: list[dict], max_tokens: int,
+                     temperature: float, thinking: bool | None,
+                     tool_choice: str = "auto") -> dict:
+    """非流式带工具请求（子代理专用），带一次故障转移。返回 {content, tool_calls, usage}。"""
+    payload = {
+        "model": AI_MODEL,
+        "messages": _adapt_messages(messages),
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        **_thinking_payload(thinking),
+    }
+    for attempt in range(2):
+        base = _target_base()
+        try:
+            # 429 退避在 _post_chat 内部完成（独立预算，不占本循环 failover 槽位）
+            r = _post_chat(base, payload)
+            if r.status_code != 200:
+                body = r.text or ""
+                if attempt == 0 and (_is_oom_text(body) or r.status_code >= 500):
+                    _do_failover()
+                    continue
+                return {"content": "", "tool_calls": [], "usage": {},
+                        "error": f"HTTP {r.status_code}: {body[:200]}"}
+            data = r.json()
+            # choices 可能为空数组（异常网关响应），安全取值防 IndexError
+            msg = (data.get("choices") or [{}])[0].get("message", {})
+            tcs: list[dict] = []
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                tcs.append({"id": tc.get("id") or f"call_{len(tcs)}",
+                            "name": fn.get("name", ""),
+                            "arguments": fn.get("arguments", "{}")})
+            return {"content": msg.get("content", "") or "", "tool_calls": tcs,
+                    "usage": data.get("usage", {})}
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0:
+                _do_failover()
+                continue
+            return {"content": "", "tool_calls": [], "usage": {}, "error": str(exc)}
+    return {"content": "", "tool_calls": [], "usage": {}}
+
+
+def _run_subagent(system: str, task: str, tool_names: list[str] | None = None,
+                  max_steps: int = 3, temperature: float = DEFAULT_TEMPERATURE,
+                  thinking: bool | None = None) -> str:
+    """运行一次性子代理，返回最终结论文本（非流式，不产生 SSE 事件）。
+
+    子代理完全隔离：只看得到自己的 system + task，看不到主对话历史；
+    最多跑 max_steps 轮工具循环；只允许只读+联网工具，无副作用、无需确认。
+    """
+    sub_tools = _sub_tools(tool_names)
+    msgs: list[dict] = [{"role": "system", "content": system},
+                        {"role": "user", "content": task}]
+    steps = max(1, min(int(max_steps), 6))
+    final = ""
+    for i in range(steps):
+        # 最后一轮强制 tool_choice="none"：模型必须用文本收敛输出结论，
+        # 避免调研类任务一直调工具、耗尽步数却不给结论（借鉴 dsh 的强制收敛）。
+        choice = "auto" if i < steps - 1 else "none"
+        resp = _chat_once_tools(msgs, sub_tools, DEFAULT_MAX_TOKENS, temperature, thinking, tool_choice=choice)
+        if resp.get("error"):
+            return f"子代理调用失败：{resp['error']}"
+        final = (resp.get("content") or "").strip()
+        tcs = resp.get("tool_calls") or []
+        # 无工具调用 → 正常收敛；最后一轮（强制收敛）即使仍返回工具调用也直接给结论，
+        # 避免个别模型不遵守 tool_choice:"none" 导致最终又退回"未给出结论"。
+        if not tcs or choice == "none":
+            return final or "（子代理未给出结论）"
+        assistant_msg: dict = {
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": tc["id"], "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                           for tc in tcs],
+        }
+        msgs.append(assistant_msg)
+        for tc in tcs:
+            msgs.append({"role": "tool", "tool_call_id": tc["id"],
+                         "content": _execute_tool(tc["name"], tc["arguments"])})
+    return final or f"子代理达到最大步数（{steps}）仍未给出结论。"
+
+
+def _tool_delegate_task(args: dict) -> str:
+    """delegate_task 工具实现：解析 persona/tools/max_steps，运行子代理并回传结论。"""
+    persona = args.get("persona")
+    system = args.get("system")
+    if isinstance(persona, str) and persona in SUBAGENT_PERSONAS:
+        system = SUBAGENT_PERSONAS[persona]["system"]
+        default_tools = list(SUBAGENT_PERSONAS[persona]["tools"])
+    else:
+        default_tools = None
+    if not system or not isinstance(system, str):
+        system = ("你是专注的数据分析子代理。基于工具返回的数据给出结构化结论，"
+                  "输出简体中文，先结论后依据，不编造。")
+    task = (args.get("task") or "").strip()
+    if not task:
+        return "delegate_task 缺少 task 参数"
+    tools = args.get("tools")
+    if isinstance(tools, list) and tools:
+        tool_names = [str(t) for t in tools if isinstance(t, str)]
+    else:
+        tool_names = default_tools
+    steps = args.get("max_steps")
+    try:
+        max_steps = max(1, min(int(steps), 6)) if steps is not None else 3
+    except (TypeError, ValueError):
+        max_steps = 3
+    result = _run_subagent(system, task, tool_names, max_steps=max_steps)
+    return (f"【子代理结果】\n{result}")
+
+
+def _tool_start_job(args: dict) -> str:
+    """start_job 工具实现：提交后台任务并返回 job id（任务在服务端后台线程执行）。"""
+    name = args.get("name")
+    if not isinstance(name, str) or not name:
+        return "start_job 缺少 name 参数"
+    job_args = args.get("args")
+    if not isinstance(job_args, dict):
+        job_args = {}
+    try:
+        job = _jobs.submit(name, job_args)
+    except ValueError as exc:
+        return f"{exc}"
+    return (f"后台任务已启动：id={job.id}，类型={job.name}，状态={job.status}\n"
+            f"可用 get_job(id=...) 查询进度，list_jobs 查看全部，cancel_job(id=...) 取消。\n"
+            f"任务类型说明：\n{_jobs.describe_jobs()}")
+
+
+def _tool_get_job(job_id: str | None) -> str:
+    if not job_id:
+        return "get_job 缺少 id 参数"
+    job = _jobs.get(job_id)
+    if job is None:
+        return f"未找到任务 {job_id}（可能已被淘汰或从未创建）"
+    tail = "\n".join(job.log[-30:])
+    return (f"任务 {job.id}（{job.name}）：状态={job.status}"
+            f"{'，错误=' + job.error if job.error else ''}\n"
+            f"最近日志：\n{tail or '（暂无）'}\n"
+            f"结果摘要：{job.result or '（进行中）'}")
+
+
+def _tool_list_jobs(limit: int | None = None) -> str:
+    try:
+        n = max(1, min(int(limit or 10), 20))
+    except (TypeError, ValueError):
+        n = 10
+    items = _jobs.list_jobs(n)
+    if not items:
+        return "暂无后台任务记录"
+    lines = ["最近后台任务（按创建时间倒序）："]
+    for j in items:
+        lines.append(f"- {j.id} | {j.name} | {j.status} | 创建 {time.strftime('%m-%d %H:%M:%S', time.localtime(j.created_at))}")
+    lines.append("可用 get_job(id=...) 查看单个任务详情。")
+    return "\n".join(lines)
+
+
+def _tool_cancel_job(job_id: str | None) -> str:
+    if not job_id:
+        return "cancel_job 缺少 id 参数"
+    job = _jobs.cancel(job_id)
+    if job is None:
+        return f"任务 {job_id} 不可取消（不存在或已结束）"
+    return f"已受理取消任务 {job_id}（状态=stopping，任务会在批次间退出）"
+
+
+# ---------------------------------------------------------------------------
+# 上下文压缩（compaction）
+#
+# 参考 dsh compaction 子系统：当累计上下文 token 逼近压力线时，把早期对话轮次
+# 折叠成一条摘要，只保留最近几轮原文 + 当前工具循环链。
+#   - 触发：每步循环前离线估算 msgs token 数（工具 schema 是稳定前缀，不重复计）。
+#   - 摘要：用一次非流式、关思考、低 max_tokens 的摘要调用生成旧对话摘要。
+#   - 前缀稳定：折叠后 system+摘要+最近轮次 固定不变，随后各步原样重发 → KV 缓存命中。
+#   压缩属于可观测事件：折叠发生时不发模型请求，代价是一次摘要调用（约几百 token）。
+# ---------------------------------------------------------------------------
+COMPACT_TRIGGER_TOKENS = int(os.environ.get("AI_COMPACT_TRIGGER_TOKENS", "60000"))
+COMPACT_KEEP_TURNS = int(os.environ.get("AI_COMPACT_KEEP_TURNS", "3"))
+COMPACT_SUMMARY_MAX = int(os.environ.get("AI_COMPACT_SUMMARY_MAX", "800"))
+
+
+def _count_msgs_tokens(msgs: list[dict]) -> int:
+    """离线估算消息列表 token 数（不含工具 schema；工具是稳定前缀）。"""
+    try:
+        return tokenizer.count_messages(msgs)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _fold_span(msgs: list[dict]) -> tuple[int, int] | None:
+    """计算可折叠消息范围 [start, end)。
+
+    msgs[0] 固定为 system。从末尾向前保留最近 COMPACT_KEEP_TURNS 个用户轮次
+    及其之后全部消息（含当前工具循环链）；更早的 user/assistant 文本折叠成摘要。
+    返回 (start, end)；无可折叠内容返回 None。
+    """
+    user_idx = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    if len(user_idx) <= COMPACT_KEEP_TURNS:
+        return None
+    keep_from = user_idx[-COMPACT_KEEP_TURNS]
+    if keep_from <= 1:
+        return None
+    return (1, keep_from)
+
+
+def _summarize_messages(system: dict, folded: list[dict]) -> str:
+    """用一次非流式摘要调用把旧对话折叠成简短中文摘要。"""
+    transcript = "\n".join(
+        f"{'用户' if m.get('role') == 'user' else '助手'}: {(m.get('content') or '').strip()}"
+        for m in folded
+        if (m.get("content") or "").strip()
+    )
+    if not transcript:
+        return ""
+    prompt = (
+        "把以下智能体对话历史压缩成简洁中文摘要，保留：用户问过的问题、关键结论、"
+        "重要数据（排名/曲名/BV号）、用户偏好与待办。不要编造，不超过300字。\n\n"
+        + transcript
+    )
+    resp = chat(
+        [{"role": "system", "content": system.get("content", "")},
+         {"role": "user", "content": prompt}],
+        max_tokens=COMPACT_SUMMARY_MAX, temperature=0.3, thinking=False,
+    )
+    return (resp.get("content") or "").strip()
+
+
+def _maybe_compact(msgs: list[dict]) -> tuple[list[dict], dict | None]:
+    """token 压力触发上下文折叠。返回 (新消息, 压缩信息 dict|None)。
+
+    压缩信息以 SSE 事件形式透传给前端展示（{type:"compaction", folded_messages, kept_messages}）。
+    触发但无可折叠内容/摘要失败时保持原消息不变，保证对话不因压缩而损坏。
+    """
+    if _count_msgs_tokens(msgs) < COMPACT_TRIGGER_TOKENS:
+        return msgs, None
+    span = _fold_span(msgs)
+    if span is None:
+        return msgs, None
+    start, end = span
+    summary = _summarize_messages(msgs[0], msgs[start:end])
+    if not summary:
+        return msgs, None
+    new_msgs = [msgs[0], {"role": "user", "content": f"[早期对话已折叠为摘要]\n{summary}"}] + msgs[end:]
+    return new_msgs, {"type": "compaction", "folded_messages": end - start, "kept_messages": len(msgs) - end}
 
 
 def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None = None,
-              temperature: float = DEFAULT_TEMPERATURE, approved: list[dict] | None = None) -> Iterator[dict]:
+              temperature: float = DEFAULT_TEMPERATURE, approved: list[dict] | None = None,
+              thinking: bool | None = None, goal: dict | None = None) -> Iterator[dict]:
     """云端 ReAct 工具循环（流式 SSE 事件生成器）。
 
     yield 事件类型：
@@ -2990,11 +4253,19 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
       - content          : 最终正文增量
       - tool_call        : 即将执行某个工具 {id,name,arguments,client?}
       - tool_result      : 工具执行结果 {id,name,content}
+      - tool_error       : 工具失败的结构化错误 {id,name,code,message}（借鉴 dsh {code,message} 契约）
+      - todo             : 待办清单快照 {todos:[{id,content,status}]}（前端渲染进度条）
       - chart            : 生成式图表 {id,title,option}（前端渲染 ECharts，无需确认）
       - client_action    : 需前端本地执行的带权限操作 {id,name,arguments,action,payload,need_confirm}
       - confirm_required : 需用户确认的危险操作 {id,name,arguments,risk}
+      - goal             : 目标圆次预算进度 {rounds_used,max_rounds,objective}
+      - goal_exhausted   : 圆次预算耗尽，停止继续调用工具并强制收敛作答 {rounds_used,max_rounds}
       - done             : 结束（paused 字段标记是否因等待确认而暂停）
       - error            : 异常 {text}
+
+    goal（借鉴 dsh goal 子系统的 maxGoalRounds）：{objective, max_rounds}。设置后把工具循环
+    的「圆次」限制在预算内——每步工具调用算 1 圆；超预算时发出 goal_exhausted 并停止调工具，
+    随后强制一轮 tool_choice="none" 的收敛作答（防止烧完预算却不给结论）。
 
     本地模式（无 AI_BASE_URL）：4B/2B 蒸馏模型无法可靠 tool-calling，直接退化为纯 chat 流式。
     """
@@ -3004,9 +4275,29 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
 
     _ensure_init()
     msgs = [{"role": "system", "content": AGENT_SYSTEM}] + list(messages)
-    steps = max(1, min(int(os.environ.get("AI_AGENT_MAX_STEPS", str(max_steps))), 12))
+    try:
+        env_steps = int(os.environ.get("AI_AGENT_MAX_STEPS", str(max_steps)))
+    except (TypeError, ValueError):
+        env_steps = max_steps
+    steps = max(1, min(env_steps, 12))
     mt = max_tokens or AI_CLOUD_MAX_TOKENS
     sources: list[dict] = []  # 联网来源累积（web_search / web_fetch 写入）
+    agg_usage: dict = {"hit": 0, "miss": 0}  # 各步 KV 缓存用量聚合（供 cache_usage 事件）
+    est_input_total: int = 0  # 全程离线估算输入 token 累计（与 agg_usage 的命中/未命中同口径）
+
+    # ---- Todo 待办清单（本 run 内 last-write-wins；模型上下文携带完整快照可跨步延续）----
+    todos: list[dict] = []
+
+    # ---- Goal 圆次预算（借鉴 dsh maxGoalRounds）：限制工具调用轮次防失控 ----
+    goal = goal or {}
+    try:
+        goal_max = max(1, min(int(goal.get("max_rounds") or steps), steps)) if goal.get("max_rounds") else None
+    except (TypeError, ValueError):
+        goal_max = None
+    goal_active = goal_max is not None
+    goal_objective = str(goal.get("objective") or "").strip()
+    rounds_used = 0
+    loop_max = goal_max if goal_active else steps
 
     # approved：前端确认后回传的已授权操作列表 [{name, arguments}]
     approved_set: set[tuple] = set()
@@ -3016,66 +4307,92 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
         except Exception:  # noqa: BLE001
             approved_set.add((a.get("name"), a.get("arguments", "")))
 
-    for step in range(steps):
+    for step in range(loop_max):
+        # 上下文压缩：token 压力触发时折叠早期轮次，保持摘要后前缀稳定（详见 compaction 小节）
+        msgs, comp = _maybe_compact(msgs)
+        if comp:
+            yield comp
+        step_reasoning = ""  # 本步思考链缓冲（思考模式下工具调用需随 assistant 消息回传）
+        # 每步用官方 tokenizer 离线估算当前输入规模（含工具 schema，随工具结果增长），累计后与
+        # agg_usage（各步命中/未命中聚合）同口径，供 cache_usage 事件折算成本
+        try:
+            est_input_total += tokenizer.count_messages(msgs, AGENT_TOOLS)
+        except Exception:  # noqa: BLE001
+            pass
         payload = {
             "model": AI_MODEL,
-            "messages": msgs,
+            "messages": _adapt_messages(msgs),
             "max_tokens": mt,
             "temperature": temperature,
             "stream": True,
             "tools": AGENT_TOOLS,
             "tool_choice": "auto",
-            **_thinking_payload(),
+            **_thinking_payload(thinking),
         }
         tool_calls: dict[int, dict] = {}
         saw_tool = False
+        _client: httpx.Client | None = None
+        _resp: httpx.Response | None = None
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                with client.stream(
-                    "POST",
-                    f"{_target_base()}/chat/completions",
-                    headers=_headers(),
-                    json=payload,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = resp.read().decode("utf-8", "ignore")
-                        yield {"type": "error", "text": f"HTTP {resp.status_code}: {body[:200]}"}
-                        return
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        chunk = line[5:].strip()
-                        if chunk == "[DONE]":
-                            continue
-                        try:
-                            obj = json.loads(chunk)
-                        except json.JSONDecodeError:
-                            continue
-                        for ch in obj.get("choices", [{}]):
-                            delta = ch.get("delta", {})
-                            if delta.get("reasoning_content"):
-                                yield {"type": "reasoning", "text": delta["reasoning_content"]}
-                            if delta.get("content"):
-                                yield {"type": "content", "text": delta["content"]}
-                            for tc in (delta.get("tool_calls") or []):
-                                saw_tool = True
-                                idx = tc.get("index", 0)
-                                slot = tool_calls.setdefault(idx, {"id": "", "name": "", "args": ""})
-                                if tc.get("id"):
-                                    slot["id"] = tc["id"]
-                                fn = tc.get("function", {})
-                                if fn.get("name"):
-                                    slot["name"] += fn["name"]
-                                if fn.get("arguments"):
-                                    slot["args"] += fn["arguments"]
+            # 429 退避在 _stream_chat 内部完成（独立预算）：智能体多轮突发最易撞分钟级限流
+            _client, _resp = _stream_chat(_target_base(), payload)
+            if _resp.status_code != 200:
+                body = _resp.read().decode("utf-8", "ignore")
+                yield {"type": "error", "text": f"HTTP {_resp.status_code}: {body[:200]}"}
+                return
+            for line in _resp.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                u = _usage_stats(obj)
+                if u:
+                    agg_usage["hit"] += u["hit"]
+                    agg_usage["miss"] += u["miss"]
+                for ch in obj.get("choices", [{}]):
+                    delta = ch.get("delta", {})
+                    if delta.get("reasoning_content"):
+                        step_reasoning += delta["reasoning_content"]
+                        yield {"type": "reasoning", "text": delta["reasoning_content"]}
+                    if delta.get("content"):
+                        yield {"type": "content", "text": delta["content"]}
+                    for tc in (delta.get("tool_calls") or []):
+                        saw_tool = True
+                        idx = tc.get("index", 0)
+                        slot = tool_calls.setdefault(idx, {"id": "", "name": "", "args": ""})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            slot["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            slot["args"] += fn["arguments"]
         except Exception as exc:  # noqa: BLE001
             logger.exception("agent stream failed")
             yield {"type": "error", "text": str(exc)}
             return
+        finally:
+            # 每步流式请求结束后立即释放连接（多步循环下防止连接堆积）
+            if _resp is not None:
+                _resp.close()
+            if _client is not None:
+                _client.close()
 
         if not saw_tool:
+            yield from _emit_cache_usage(agg_usage, est_input_total)
             yield {"type": "done"}
             return
+
+        # 本步消耗一个工具圆次（Goal 预算计数）；预算耗尽则停止，避免继续烧 token
+        rounds_used += 1
+        if goal_active:
+            yield {"type": "goal", "rounds_used": rounds_used, "max_rounds": goal_max,
+                   "objective": goal_objective}
 
         # 本步工具调用收尾：分配稳定 id，写入 assistant(tool_calls) 与 tool 结果
         ordered: list[dict] = []
@@ -3083,7 +4400,7 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
             t = tool_calls[idx]
             t["tid"] = t["id"] or f"call_{step}_{idx}"
             ordered.append(t)
-        msgs.append({
+        assistant_msg: dict = {
             "role": "assistant",
             "content": None,
             "tool_calls": [
@@ -3091,7 +4408,11 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
                  "function": {"name": t["name"], "arguments": t["args"]}}
                 for t in ordered
             ],
-        })
+        }
+        # 思考模式下工具调用必须回传 reasoning_content，否则 DeepSeek 返回 400（见官方文档）。
+        if step_reasoning:
+            assistant_msg["reasoning_content"] = step_reasoning
+        msgs.append(assistant_msg)
         for t in ordered:
             name = t["name"]
             args_str = t["args"] or "{}"
@@ -3114,6 +4435,7 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
                     "payload": _safe_json(args_str),
                     "need_confirm": need_confirm,
                 }
+                yield from _emit_cache_usage(agg_usage, est_input_total)
                 yield {"type": "done", "paused": "client_action"}
                 return
 
@@ -3128,11 +4450,15 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
                         "arguments": args_str,
                         "risk": _RISK_DESC.get(name, "该操作有副作用，请确认。"),
                     }
+                    yield from _emit_cache_usage(agg_usage, est_input_total)
                     yield {"type": "done", "paused": "confirm_required"}
                     return
                 yield {"type": "tool_call", "id": t["tid"], "name": name, "arguments": args_str}
                 before = len(sources)
                 result_text = _execute_tool(name, args_str, sources=sources)
+                terr = _parse_tool_error(result_text)
+                if terr:
+                    yield {"type": "tool_error", "id": t["tid"], "name": name, **terr}
                 yield {"type": "tool_result", "id": t["tid"], "name": name, "content": result_text}
                 msgs.append({"role": "tool", "tool_call_id": t["tid"], "content": result_text})
                 if len(sources) > before:
@@ -3159,14 +4485,102 @@ def run_agent(messages: list[dict], max_steps: int = 6, max_tokens: int | None =
                 msgs.append({"role": "tool", "tool_call_id": t["tid"], "content": f"已渲染图表：{title}"})
                 continue
 
+            # 3.5) 两曲对比：除文本回灌外，后端自动补一张对比图（避免模型忘了调 render_chart）
+            if name == "get_song_compare":
+                try:
+                    cargs = json.loads(args_str)
+                except Exception:  # noqa: BLE001
+                    cargs = {}
+                result_text, chart_opt = _song_compare_data(
+                    cargs.get("bvid_a"), cargs.get("bvid_b")
+                )
+                yield {"type": "tool_call", "id": t["tid"], "name": name, "arguments": args_str}
+                if chart_opt:
+                    yield {"type": "chart", "id": t["tid"] + "-cmp", "title": "两曲实时互动对比",
+                           "option": chart_opt}
+                yield {"type": "tool_result", "id": t["tid"], "name": name, "content": result_text}
+                msgs.append({"role": "tool", "tool_call_id": t["tid"], "content": result_text})
+                continue
+
+            # 3.6) Todo 待办清单（借鉴 dsh tool-todo）：整表替换，透传前端渲染进度条；
+            #      只给模型回灌简短摘要（整表 JSON 塞回上下文会白烧 token）
+            if name == "todo_write":
+                yield {"type": "tool_call", "id": t["tid"], "name": name, "arguments": args_str}
+                todos = _tool_todo_write(_safe_json(args_str), todos)
+                yield {"type": "todo", "todos": todos}
+                summary = _todo_summary(todos)
+                yield {"type": "tool_result", "id": t["tid"], "name": name, "content": summary}
+                msgs.append({"role": "tool", "tool_call_id": t["tid"], "content": summary})
+                continue
+
             # 4) 普通只读工具：直接执行并回灌
             yield {"type": "tool_call", "id": t["tid"], "name": name, "arguments": args_str}
             before = len(sources)
             result_text = _execute_tool(name, args_str, sources=sources)
+            terr = _parse_tool_error(result_text)
+            if terr:
+                yield {"type": "tool_error", "id": t["tid"], "name": name, **terr}
             yield {"type": "tool_result", "id": t["tid"], "name": name, "content": result_text}
             msgs.append({"role": "tool", "tool_call_id": t["tid"], "content": result_text})
             if len(sources) > before:
                 yield {"type": "sources", "items": sources[before:]}
 
-    yield {"type": "error", "text": f"已达到最大工具调用步数（{steps}），仍未给出最终结论。"}
+    # ---- 步数/预算耗尽：强制收敛作答 ----
+    # 借鉴 _run_subagent 最后一轮 tool_choice="none" 的强制收敛设计：多步任务烧完预算
+    # 却只回一条错误、不给结论，对用户不友好。这里追加一轮「无工具」流式请求，
+    # 让模型基于已收集的数据立即输出最终回答；若数据不足也让其明确说明还缺什么。
+    if goal_active:
+        yield {"type": "goal_exhausted", "rounds_used": rounds_used, "max_rounds": goal_max,
+               "objective": goal_objective}
+    msgs.append({"role": "user", "content":
+                 "（系统提示：工具调用轮次已达上限。请立即基于以上已获取的数据给出最终回答；"
+                 "若数据不足，请明确说明还缺什么，不要再请求工具。）"})
+    final_payload = {
+        "model": AI_MODEL,
+        "messages": _adapt_messages(msgs),
+        "max_tokens": mt,
+        "temperature": temperature,
+        "stream": True,
+        "tools": AGENT_TOOLS,
+        "tool_choice": "none",
+        **_thinking_payload(thinking),
+    }
+    _client: httpx.Client | None = None
+    _resp: httpx.Response | None = None
+    try:
+        _client, _resp = _stream_chat(_target_base(), final_payload)
+        if _resp.status_code != 200:
+            body = _resp.read().decode("utf-8", "ignore")
+            yield {"type": "error", "text": f"HTTP {_resp.status_code}: {body[:200]}"}
+            return
+        for line in _resp.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            chunk = line[5:].strip()
+            if chunk == "[DONE]":
+                continue
+            try:
+                obj = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            u = _usage_stats(obj)
+            if u:
+                agg_usage["hit"] += u["hit"]
+                agg_usage["miss"] += u["miss"]
+            for ch in obj.get("choices", [{}]):
+                delta = ch.get("delta", {})
+                if delta.get("reasoning_content"):
+                    yield {"type": "reasoning", "text": delta["reasoning_content"]}
+                if delta.get("content"):
+                    yield {"type": "content", "text": delta["content"]}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent final answer failed")
+        yield {"type": "error", "text": str(exc)}
+        return
+    finally:
+        if _resp is not None:
+            _resp.close()
+        if _client is not None:
+            _client.close()
+    yield from _emit_cache_usage(agg_usage, est_input_total)
     yield {"type": "done"}

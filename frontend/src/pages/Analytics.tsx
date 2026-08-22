@@ -1,17 +1,13 @@
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
-import * as echarts from "echarts/core"
-import { BarChart, LineChart } from "echarts/charts"
-import { GridComponent, TooltipComponent, LegendComponent } from "echarts/components"
-import { CanvasRenderer } from "echarts/renderers"
 import { api } from "../lib/api"
 import { Empty } from "../components/ui"
 import { ChartExport } from "../components/ChartExport"
 import { SkeletonTable } from "../components/Skeleton"
 import { useEChart } from "../hooks/useEChart"
 import { useTheme, getChartPalette, type ChartPalette } from "../lib/theme"
-
-echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+import { Reveal, StaggerGroup, StaggerItem } from "../lib/motion"
+import { PageHeader } from "../components/PageHeader"
 
 const BAR_COLOR = "#4fc3f7"
 
@@ -55,6 +51,13 @@ export default function Analytics() {
   const vocalistsQ = useQuery({ queryKey: ["stats-vocalists"], queryFn: () => api.vocalists(100) })
   const weeklyQ = useQuery({ queryKey: ["issues", "weekly"], queryFn: () => api.boardIssues("weekly") })
   const monthlyQ = useQuery({ queryKey: ["month-issues"], queryFn: api.monthIssues })
+  const facetsQ = useQuery({ queryKey: ["song-facets"], queryFn: api.songFacets })
+  const latest = weeklyQ.data?.issues?.[0]?.issue
+  const latestQ = useQuery({
+    queryKey: ["rankings", "weekly", latest],
+    queryFn: () => api.rankings("weekly", latest!, 20),
+    enabled: !!latest,
+  })
 
   const artistOpt = useMemo(() => {
     const items = [...(artistsQ.data?.items ?? [])].sort((a, b) => b.songs - a.songs).slice(0, 15).reverse()
@@ -105,6 +108,73 @@ export default function Analytics() {
     }
   }, [weeklyQ.data, pal])
 
+  // 曲库分档分布（环形图）
+  const tierOpt = useMemo(() => {
+    const t = facetsQ.data?.tiers
+    if (!t) return null
+    return {
+      tooltip: {
+        trigger: "item",
+        backgroundColor: pal.tooltipBg,
+        borderColor: pal.tooltipBorder,
+        textStyle: { color: pal.text },
+        formatter: "{b}: {c} 首 ({d}%)",
+      },
+      legend: { bottom: 0, textStyle: { color: pal.axis, fontSize: 11 }, itemWidth: 12, itemHeight: 12 },
+      series: [
+        {
+          type: "pie",
+          radius: ["42%", "68%"],
+          center: ["50%", "46%"],
+          avoidLabelOverlap: true,
+          itemStyle: { borderColor: pal.split, borderWidth: 2 },
+          label: { show: false },
+          emphasis: { label: { show: true, fontWeight: "bold", color: pal.text } },
+          data: [
+            { name: "神话曲", value: t.myth, itemStyle: { color: "#b56bff" } },
+            { name: "传说曲", value: t.legend, itemStyle: { color: "#ffd166" } },
+            { name: "殿堂曲", value: t.hall, itemStyle: { color: "#4fc3f7" } },
+            { name: "未达标", value: t.none, itemStyle: { color: "#5b7188" } },
+          ],
+        },
+      ],
+    }
+  }, [facetsQ.data, pal])
+
+  // 最新一期 Top 10 歌曲指标（对数轴，突出数量级差异）
+  const topMetricOpt = useMemo(() => {
+    const items = latestQ.data?.items ?? []
+    if (!items.length) return null
+    return {
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: pal.tooltipBg,
+        borderColor: pal.tooltipBorder,
+        textStyle: { color: pal.text },
+      },
+      legend: { top: 0, textStyle: { color: pal.axis, fontSize: 11 }, itemWidth: 12, itemHeight: 12 },
+      grid: { left: 48, right: 20, top: 34, bottom: 46 },
+      xAxis: {
+        type: "category",
+        data: items.slice(0, 10).map((it) => it.title.slice(0, 8)),
+        axisLabel: { color: pal.axis, fontSize: 10, rotate: 35 },
+        axisLine: { lineStyle: { color: pal.split } },
+      },
+      yAxis: {
+        type: "log",
+        name: "指标（对数）",
+        nameTextStyle: { color: pal.axis, fontSize: 10 },
+        axisLabel: { color: pal.axis, fontSize: 10 },
+        splitLine: { lineStyle: { color: pal.split } },
+      },
+      series: [
+        { name: "播放", type: "bar", data: items.slice(0, 10).map((it) => it.view ?? 0), itemStyle: { color: "#4fc3f7" } },
+        { name: "点赞", type: "bar", data: items.slice(0, 10).map((it) => it.like ?? 0), itemStyle: { color: "#ffd166" } },
+        { name: "硬币", type: "bar", data: items.slice(0, 10).map((it) => it.coin ?? 0), itemStyle: { color: "#ff2ea6" } },
+      ],
+    }
+  }, [latestQ.data, pal])
+
   if (artistsQ.isLoading || weeklyQ.isLoading)
     return <div className="card" style={{ padding: 20 }}><SkeletonTable rows={12} /></div>
 
@@ -117,37 +187,57 @@ export default function Analytics() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">分析 · 数据洞察</div>
-          <h1>数据分析</h1>
-        </div>
-      </div>
+      <Reveal>
+        <PageHeader crumb="分析 · 数据洞察" title="数据分析" />
+      </Reveal>
 
-      <div className="stat-row" style={{ marginBottom: 16 }}>
+      <StaggerGroup className="stat-row" style={{ marginBottom: 16 }}>
         {stats.map((s) => (
-          <div className="stat" key={s.k}>
-            <div className="k">{s.k}</div>
-            <div className="v">{s.v}<small>项</small></div>
-          </div>
+          <StaggerItem key={s.k}>
+            <div className="stat">
+              <div className="k">{s.k}</div>
+              <div className="v">{s.v}<small>项</small></div>
+            </div>
+          </StaggerItem>
         ))}
-      </div>
+      </StaggerGroup>
 
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-title">热门 P主 Top 15 <span className="badge">按上榜歌曲数</span></div>
-          {artistOpt ? <EChart option={artistOpt} filename="analytics-artists-top15" /> : <Empty />}
-        </div>
-        <div className="card">
-          <div className="card-title">热门歌姬 Top 15 <span className="badge">按上榜歌曲数</span></div>
-          {vocalistOpt ? <EChart option={vocalistOpt} filename="analytics-vocalists-top15" /> : <Empty />}
-        </div>
-      </div>
+      <StaggerGroup className="grid-2">
+        <StaggerItem>
+          <div className="card">
+            <div className="card-title">热门 P主 Top 15 <span className="badge">按上榜歌曲数</span></div>
+            {artistOpt ? <EChart option={artistOpt} filename="analytics-artists-top15" /> : <Empty />}
+          </div>
+        </StaggerItem>
+        <StaggerItem>
+          <div className="card">
+            <div className="card-title">热门歌姬 Top 15 <span className="badge">按上榜歌曲数</span></div>
+            {vocalistOpt ? <EChart option={vocalistOpt} filename="analytics-vocalists-top15" /> : <Empty />}
+          </div>
+        </StaggerItem>
+      </StaggerGroup>
 
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-title">周榜规模趋势 <span className="badge">每期上榜首数</span></div>
-        {trendOpt ? <EChart option={trendOpt} height={300} filename="analytics-weekly-trend" /> : <Empty />}
-      </div>
+      <Reveal>
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-title">周榜规模趋势 <span className="badge">每期上榜首数</span></div>
+          {trendOpt ? <EChart option={trendOpt} height={300} filename="analytics-weekly-trend" /> : <Empty />}
+        </div>
+      </Reveal>
+
+      <StaggerGroup className="grid-2" style={{ marginTop: 16 }}>
+        <StaggerItem>
+          <div className="card">
+            <div className="card-title">曲库分档分布 <span className="badge">神话 / 传说 / 殿堂</span></div>
+            {tierOpt ? <EChart option={tierOpt} height={300} filename="analytics-tier-donut" /> : <Empty />}
+          </div>
+        </StaggerItem>
+        <StaggerItem>
+          <div className="card">
+            <div className="card-title">最新一期 Top 10 指标 <span className="badge">对数轴</span></div>
+            {topMetricOpt ? <EChart option={topMetricOpt} height={300} filename="analytics-top-metrics" /> : <Empty />}
+          </div>
+        </StaggerItem>
+      </StaggerGroup>
     </>
   )
 }

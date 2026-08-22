@@ -1,10 +1,13 @@
 import { useState } from "react"
-import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import type { BiliSearchItem } from "../lib/types"
 import { Autocomplete, type Suggestion } from "../components/Autocomplete"
 import { Spinner, fmt } from "../components/ui"
+import { PageHeader } from "../components/PageHeader"
+import { Reveal } from "../lib/motion"
+import { AnimatedBadge, AnimatedGradientText, BorderBeam } from "../components/fx/magicui"
+import { AnimateIn } from "../components/fx/animate"
 
 function extractBvid(raw: string): string | null {
   const m = raw.match(/BV[0-9A-Za-z]+/i)
@@ -49,9 +52,9 @@ export default function FormulaLab() {
       if (!bvid) return null
       try {
         return await api.autoScore(bvid)
-      } catch (e: any) {
+      } catch (e) {
         // 未在收录库：自动入库（爬虫自己爬 —— 服务端子进程回源 B站，当前出口可通），再重试算分
-        const msg = String(e?.message || "")
+        const msg = e instanceof Error ? e.message : String(e)
         if (msg.includes("404")) {
           await api.ingestSong(bvid)
           return await api.autoScore(bvid)
@@ -75,8 +78,8 @@ export default function FormulaLab() {
         setCandidates([])
         setSearchErr("在 B站 没搜到相关视频，换个关键词试试？")
       }
-    } catch (e: any) {
-      setSearchErr(String(e?.message || "搜索失败"))
+    } catch (e) {
+      setSearchErr(e instanceof Error ? e.message : "搜索失败")
     } finally {
       setSearching(false)
     }
@@ -91,8 +94,8 @@ export default function FormulaLab() {
       setBvid(song.bvid)
       setTitle(song.title || raw)
       setCandidates(null)
-    } catch (e: any) {
-      setSearchErr(String(e?.message || "解析失败"))
+    } catch (e) {
+      setSearchErr(e instanceof Error ? e.message : "解析失败")
     } finally {
       setSearching(false)
     }
@@ -127,28 +130,28 @@ export default function FormulaLab() {
   const latest = data?.latest ?? null
   const newFactors = latest?.new ?? null
   const factorRows = newFactors
-    ? FACTORS.map((f) => ({ ...f, val: (newFactors as any)[f.key] as number | null }))
+    ? FACTORS.map((f) => ({ ...f, val: newFactors[f.key] }))
     : []
   const factorTotal = factorRows.reduce((s, f) => s + (f.val ?? 0), 0)
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">
-            <Link to="/">总览</Link> · 公式实验室
-          </div>
-          <h1>公式可视化实验室</h1>
-          <p className="muted" style={{ maxWidth: 780 }}>
-            把 B站 视频链接、BV 号，或直接搜曲名粘贴到下面——系统会自动爬数据、按现行公式算分并拆解，
-            不用你填任何数字。
-          </p>
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb={<>总览 · 公式实验室</>}
+        title={
+          <AnimatedGradientText className="[font-size:inherit] [font-weight:inherit]">
+            公式可视化实验室
+          </AnimatedGradientText>
+        }
+        desc="把 B站 视频链接、BV 号，或直接搜曲名粘贴到下面——系统会自动爬数据、按现行公式算分并拆解，不用你填任何数字。"
+      />
+      </Reveal>
 
+      <Reveal delay={0.06}>
       <div className="card">
         <div className="card-title">
-          粘贴即算分 <span className="badge">自动爬取 + 自动算分</span>
+          粘贴即算分 <AnimatedBadge className="align-middle">自动爬取 + 自动算分</AnimatedBadge>
         </div>
         <div className="lib-filters">
           <Autocomplete
@@ -211,7 +214,11 @@ export default function FormulaLab() {
           </div>
         )}
 
-        {searchErr && <div className="error-box">{searchErr}</div>}
+        {searchErr && (
+          <AnimateIn name="headShake" gate="dataAnim" className="w-fit">
+            <div className="error-box">{searchErr}</div>
+          </AnimateIn>
+        )}
 
         {bvid && (
           <div className="muted" style={{ fontSize: 12.5, margin: "6px 0" }}>
@@ -222,12 +229,14 @@ export default function FormulaLab() {
         {scoreQ.isLoading && <Spinner />}
 
         {scoreQ.isError && (
-          <div className="error-box">
-            无法自动算分：{(scoreQ.error as any)?.message || "未知错误"}
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              提示：粘贴的链接/BV 需是真实存在的 B站 视频；视频被删除或设为私享时会抓取失败。
+          <AnimateIn name="headShake" gate="dataAnim" className="w-fit">
+            <div className="error-box">
+              无法自动算分：{scoreQ.error?.message || "未知错误"}
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                提示：粘贴的链接/BV 需是真实存在的 B站 视频；视频被删除或设为私享时会抓取失败。
+              </div>
             </div>
-          </div>
+          </AnimateIn>
         )}
 
         {data && !latest && (
@@ -262,6 +271,7 @@ export default function FormulaLab() {
               </span>
             </div>
 
+            <AnimateIn key={`${bvid}-${latest.issue}`} name="fadeInUp" delay={120} gate="dataAnim">
             <div className="score-hero">
               <div className="sh-item">
                 <span className="sh-label">最新一期官方得分</span>
@@ -270,7 +280,8 @@ export default function FormulaLab() {
                   第 {latest.issue} 期 · 排名 {latest.rank ?? "-"}
                 </span>
               </div>
-              <div className="sh-item">
+              <div className="sh-item relative overflow-hidden">
+                <BorderBeam size={46} duration={5} />
                 <span className="sh-label">新公式得分</span>
                 <b className="sh-num sh-new">{fmt(latest.new.total)}</b>
                 <span className="sh-sub">t 时间修正 = {latest.t_new.toFixed(4)}</span>
@@ -281,6 +292,7 @@ export default function FormulaLab() {
                 <span className="sh-sub">t 时间修正 = {latest.t_old.toFixed(4)}</span>
               </div>
             </div>
+            </AnimateIn>
 
             <div className="card-title" style={{ marginTop: 16 }}>
               得分从哪来 · 新公式因子构成
@@ -356,6 +368,7 @@ export default function FormulaLab() {
           </details>
         )}
       </div>
+      </Reveal>
     </>
   )
 }

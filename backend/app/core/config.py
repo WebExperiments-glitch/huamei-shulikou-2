@@ -22,7 +22,12 @@ AGENT_DB = DATA_DIR / "agent.sqlite"
 CACHE_DB = DATA_DIR / "cache.sqlite"
 
 APP_NAME = "huamei术力口"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0.1-rc1"
+
+# Playwright 浏览器（StealthyFetcher 全隐身抓取所需 Chromium）固定装在项目 D 盘目录，
+# 避免默认写进 C 盘用户目录。必须在任何浏览器启动前设置该环境变量。
+PLAYWRIGHT_BROWSERS = BASE_DIR / "backend" / ".playwright-browsers"
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PLAYWRIGHT_BROWSERS))
 
 # 安全相关：允许跨域的前端源；生产可经环境变量 CORS_ORIGINS 收紧（逗号/分号分隔）。
 def cors_origins() -> list[str]:

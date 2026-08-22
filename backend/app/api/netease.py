@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services import netease
@@ -28,6 +29,24 @@ class SearchReq(BaseModel):
 
 class SongReq(BaseModel):
     id: int | str
+
+
+class CookieReq(BaseModel):
+    """完整 Cookie 串（含 MUSIC_U=...; NMTID=... 等，从 Network 面板复制）。"""
+    music_u: str = ""
+
+
+@router.get("/cookie")
+def get_cookie():
+    """读取网易云 Cookie 配置状态（本机应用，回填到设置面板）。"""
+    return netease.get_cookie_status()
+
+
+@router.put("/cookie", dependencies=[Depends(_rate_limit)])
+def put_cookie(req: CookieReq):
+    """保存/清除网易云 Cookie（MUSIC_U 段）。传空串即清除。"""
+    netease.save_cookie(req.music_u)
+    return netease.get_cookie_status()
 
 
 @router.post("/search", dependencies=[Depends(_rate_limit)])
@@ -100,5 +119,44 @@ def song_url(req: SongReq):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"网易云请求失败：{exc}")
     if detail is None or not detail.get("url"):
+        if not netease.get_cookie_status().get("configured"):
+            raise HTTPException(
+                status_code=404,
+                detail="该歌曲可能为会员专享或已下架：免费歌曲无需登录可直接播放；会员/高音质需配置 Cookie 解锁",
+            )
         raise HTTPException(status_code=404, detail="该歌曲无可用播放源（版权限制或已下架）")
     return detail
+
+
+@router.get("/audio/{song_id}")
+def audio(song_id: int | str):
+    """网易云音频流代理：流式转发并补 CORS 头。
+
+    网易云音频外链无 CORS 头，前端 <audio crossOrigin> 读不到数据；一旦被
+    Web Audio 图（createMediaElementSource）接管便静音、频谱全零。本端点把
+    音频流原样转发（供 <audio> 直接播放），从根上解决「可视化没声音/地图不动」。
+    """
+    try:
+        upstream = netease.get_audio_stream(song_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ctype = upstream.headers.get("Content-Type") or "audio/mpeg"
+    length = upstream.headers.get("Content-Length")
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length",
+        "Content-Type": ctype,
+        "Accept-Ranges": "bytes",
+    }
+    if length:
+        headers["Content-Length"] = length
+
+    def gen():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(gen(), headers=headers, media_type=ctype)

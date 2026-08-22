@@ -1,20 +1,16 @@
 import { useMemo, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import * as echarts from "echarts/core"
-import { LineChart, BarChart } from "echarts/charts"
-import { GridComponent, TooltipComponent, LegendComponent } from "echarts/components"
-import { CanvasRenderer } from "echarts/renderers"
 import { api } from "../lib/api"
 import { Empty, Spinner, fmt, fmtDate, Rate } from "../components/ui"
 import { ExternalLink, Copy, Sigma, Heart } from "lucide-react"
 import { useEChart } from "../hooks/useEChart"
 import { ChartExport } from "../components/ChartExport"
 import { useFavorites } from "../lib/favorites"
+import { useToast } from "../lib/toast"
 import type { RankEntry, ScoreEntry } from "../lib/types"
 import { useTheme, getChartPalette } from "../lib/theme"
-
-echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+import { Reveal, StaggerGroup, StaggerItem } from "../lib/motion"
 
 const EMPTY_WEEKLY: RankEntry[] = []
 
@@ -112,19 +108,21 @@ export default function SongDetail() {
 
   const chartRef = useEChart(chartOption)
 
+  const toast = useToast().toast
+
   const [copied, setCopied] = useState(false)
   function copyBili(url: string) {
     navigator.clipboard?.writeText(url).then(
-      () => { setCopied(true); setTimeout(() => setCopied(false), 1600) },
-      () => {},
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1600); toast("已复制原视频链接", "success") },
+      () => toast("复制失败，请手动复制", "error"),
     )
   }
 
   const [copiedTr, setCopiedTr] = useState(false)
   function copyText(text: string) {
     navigator.clipboard?.writeText(text).then(
-      () => { setCopiedTr(true); setTimeout(() => setCopiedTr(false), 1600) },
-      () => {},
+      () => { setCopiedTr(true); setTimeout(() => setCopiedTr(false), 1600); toast("已复制标题文本", "success") },
+      () => toast("复制失败，请手动复制", "error"),
     )
   }
 
@@ -142,6 +140,7 @@ export default function SongDetail() {
 
   return (
     <>
+      <Reveal>
       <div className="topbar">
         <div>
           <div className="crumb">
@@ -165,14 +164,19 @@ export default function SongDetail() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
           <button
             className={`chip${isFav ? " active" : ""}`}
-            onClick={() => toggleFav({ bvid: song.bvid, title: song.title, title_cn: song.title_cn })}
+            onClick={() => {
+              toggleFav({ bvid: song.bvid, title: song.title, title_cn: song.title_cn })
+              toast(isFav ? "已取消收藏" : "已收藏到「我的收藏」", isFav ? "info" : "success")
+            }}
             title="收藏 / 取消收藏"
           >
             <Heart size={14} /> {isFav ? "已收藏" : "收藏"}
           </button>
         </div>
       </div>
+      </Reveal>
 
+      <Reveal delay={0.06}>
       <div className="card bili-card">
         <div className="card-title">B 站原视频</div>
         <div className="bili-row">
@@ -183,7 +187,9 @@ export default function SongDetail() {
           <button className="chip" onClick={() => copyBili(biliUrl)}><Copy size={13} /> {copied ? "已复制" : "复制链接"}</button>
         </div>
       </div>
+      </Reveal>
 
+      <Reveal delay={0.1}>
       <div className="card tr-card">
         <div className="card-title">译名（机翻参考）</div>
         <div className="tr-row">
@@ -215,8 +221,10 @@ export default function SongDetail() {
           翻译由 Google 自动生成，专有名词（人名、梗、双关）可能不准，仅作参考；结果已缓存，可重复查看无需重翻。
         </div>
       </div>
+      </Reveal>
 
-      <div className="grid-2" style={{ marginBottom: 16 }}>
+      <StaggerGroup className="grid-2" style={{ marginBottom: 16 }}>
+        <StaggerItem key="producers">
         <div className="card">
           <div className="card-title">P主</div>
           <div className="pills">
@@ -227,6 +235,8 @@ export default function SongDetail() {
             ))}
           </div>
         </div>
+        </StaggerItem>
+        <StaggerItem key="vocalists">
         <div className="card">
           <div className="card-title">歌姬</div>
           <div className="pills">
@@ -237,19 +247,26 @@ export default function SongDetail() {
             ))}
           </div>
         </div>
-      </div>
+        </StaggerItem>
+      </StaggerGroup>
 
+      <Reveal delay={0.06}>
       <ScoreBreakdownCard bvid={song.bvid} />
+      </Reveal>
 
       {Object.entries(data.histories).map(([type, rows]) => (
-        <HistoryCard key={type} type={type} rows={rows} />
+        <Reveal key={type} delay={0.06}>
+        <HistoryCard type={type} rows={rows} />
+        </Reveal>
       ))}
 
       {chartOption && (
+        <Reveal delay={0.1}>
         <div className="card">
           <div className="card-title">周榜排名轨迹<ChartExport getURL={chartRef.getDataURL} filename={"song-rank-" + song.bvid} /></div>
           <div ref={chartRef.setRef} className="chart" />
         </div>
+        </Reveal>
       )}
     </>
   )
@@ -278,9 +295,9 @@ function ScoreBreakdownCard({ bvid }: { bvid: string }) {
     const issues = entries.map((e) => e.issue)
     const series = COMP_DEFS.map((c) => {
       const vals = entries.map((e) => {
-        const v = (e as unknown as Record<string, number | null>)[c.key]
+        const v = e[c.key]
         const sum = COMP_DEFS.reduce(
-          (s, d) => s + Math.abs((e as unknown as Record<string, number | null>)[d.key] ?? 0),
+          (s, d) => s + Math.abs(e[d.key] ?? 0),
           0,
         )
         return sum > 0 && v != null ? +((Math.abs(v) / sum) * 100).toFixed(2) : 0

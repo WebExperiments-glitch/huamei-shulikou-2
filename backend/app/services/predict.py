@@ -124,6 +124,10 @@ def _pick_pair(hot, baseline: str) -> tuple[dict | None, dict | None, float]:
         old = snaps[1]
     elif baseline.isdigit():
         old = next((s for s in snaps if s["id"] == int(baseline)), snaps[1])
+        # 兜底：baseline 误传为最新快照 id 时 old==new，窗口≈0 会让外推倍率
+        # f=7/window 爆炸（可达上万倍）。自动回退到相邻上一份快照。
+        if old["id"] == new["id"]:
+            old = snaps[1]
     else:
         limit_ts = new["created_at"] - AUTO_BASELINE_MAX_DAYS * 86400
         candidates = [s for s in snaps[1:] if s["created_at"] >= limit_ts]

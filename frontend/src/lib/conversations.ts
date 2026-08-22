@@ -13,6 +13,20 @@ export type ToolCall = {
   risk?: string
   isClient?: boolean
   isDanger?: boolean
+  error?: { code: string; message: string } // 结构化错误码（tool_error 事件，借鉴 dsh {code,message}）
+}
+
+/** 待办清单项（todo_write 工具，借鉴 dsh tool-todo：整表替换 + last-write-wins） */
+export type TodoItem = {
+  id: string
+  content: string
+  status: "pending" | "in_progress" | "completed"
+}
+
+/** 目标圆次预算（借鉴 dsh goal 的 maxGoalRounds：限制工具调用轮次防失控） */
+export type AgentGoal = {
+  objective: string
+  max_rounds: number
 }
 
 export type SourceItem = {
@@ -27,13 +41,39 @@ export type ChartSpec = {
   option: EChartsCoreOption
 }
 
+export type CacheUsage = {
+  hit: number
+  miss: number
+  total: number
+  pct: number
+  est_input?: number   // 离线估算的输入 token 数
+  cost?: number        // 本次输入估算成本（元）
+  pricing?: {           // 定价参考（元/百万 tokens）
+    hit: number
+    miss: number
+    output: number
+  }
+}
+
+export type Feedback = {
+  rating: "up" | "down"
+  note?: string
+  at?: number // 提交时间（毫秒）
+}
+
 export type AIMessage = {
   role: "user" | "assistant"
   content: string
   reasoning?: string
   tools?: ToolCall[]
+  todos?: TodoItem[] // 待办清单快照（todo 事件，前端渲染进度条）
+  goalProgress?: { rounds_used: number; max_rounds: number; objective: string } // 目标圆次预算实时进度（goal 事件）
+  goalNote?: string // 目标圆次预算提示（goal_exhausted 事件）
   sources?: SourceItem[]
   charts?: ChartSpec[]
+  cacheUsage?: CacheUsage
+  compactNote?: string // 上下文压缩提示（后端 compaction 事件）
+  feedback?: Feedback // 用户对这条回复的评价（👍/👎 + 备注）
 }
 
 export interface Conversation {
@@ -181,8 +221,21 @@ async function loadFromServer() {
       }
       return
     }
-    const merged = [...remote].sort((a, b) => b.updatedAt - a.updatedAt)
-    useConversations.setState({ conversations: merged, activeId: merged[0]?.id ?? null })
+    // 按 id 合并：本地与服务端逐会话取 updatedAt 较新者。整体覆盖会在服务端响应晚到时
+    // （慢网络 / StrictMode 双调用）抹掉本地刚写入或流式进行中的消息，并打断当前选中的会话。
+    const local = useConversations.getState().conversations
+    const byId = new Map<string, Conversation>()
+    for (const c of remote) byId.set(c.id, c)
+    for (const c of local) {
+      const r = byId.get(c.id)
+      if (!r || c.updatedAt >= r.updatedAt) byId.set(c.id, c)
+    }
+    const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+    const cur = useConversations.getState().activeId
+    useConversations.setState({
+      conversations: merged,
+      activeId: merged.some((c) => c.id === cur) ? cur : merged[0]?.id ?? null,
+    })
     scheduleSave()
   } catch {
     /* 离线降级：保留本地 */

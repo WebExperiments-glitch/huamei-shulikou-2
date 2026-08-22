@@ -54,12 +54,11 @@ def get_rankings(board_type: str, issue: str,
         items = boards_svc.get_issue_rankings(conn, board_type, issue, top, offset)
         if not items:
             raise HTTPException(404, "该期不存在或无数据")
-        # 自建榜单：用我们的公式重算后的排名/得分作为主字段，官方结果保留为对照
+        # 官方排名/得分为主字段（rank/score），自算公式结果（self_rank/self_score）保留为对照。
+        # 注意：不要再把 self_rank/self_score 覆盖到 rank/score，否则前端第一名会与官方互换。
         for d in items:
             d["official_rank"] = d.get("rank")
             d["official_score"] = d.get("score")
-            d["rank"] = d["self_rank"]
-            d["score"] = d["self_score"]
         return {
             "board_type": board_type,
             "issue": issue,

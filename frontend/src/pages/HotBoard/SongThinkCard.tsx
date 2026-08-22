@@ -2,6 +2,7 @@ import { Link } from "react-router-dom"
 import { Eye, ThumbsUp, Coins, Star, MessageCircle, Subtitles } from "lucide-react"
 import type { SongThink } from "../../lib/types"
 import { fmt, fmtDate } from "../../components/ui"
+import { AnimatedNumber } from "../../lib/fx"
 
 export function SongThinkCard({ d }: { d: SongThink }) {
   const ratios = [
@@ -52,7 +53,7 @@ export function SongThinkCard({ d }: { d: SongThink }) {
         {metrics.map((m) => (
           <div className="metric-tile" key={m.label}>
             <m.icon size={16} style={{ color: m.color }} />
-            <div className="metric-val" style={{ color: m.color }}>{fmt(m.v)}</div>
+            <div className="metric-val" style={{ color: m.color }}><AnimatedNumber value={m.v} formatter={fmt} /></div>
             <div className="metric-label">{m.label}</div>
           </div>
         ))}

@@ -17,6 +17,7 @@ from . import wbi
 
 _VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
 _SEARCH_URL = "https://api.bilibili.com/x/web-interface/wbi/search/all/v2"
+_PLAYER_URL = "https://api.bilibili.com/x/player/wbi/v2"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -38,7 +39,12 @@ def _view(bvid: str) -> dict:
 
 def _search(q: str) -> dict:
     try:
-        r = wbi.signed_get(_SEARCH_URL, {"keyword": q, "search_type": "video", "page": 1})
+        # 搜索是 B 站风控最严的接口：走 StealthyFetcher 全隐身 + WBI2 行为签名。
+        r = wbi.stealth_get(
+            _SEARCH_URL,
+            {"keyword": q, "search_type": "video", "page": 1},
+            wbi2=True,
+        )
         p = r.json()
         if p.get("code") != 0:
             return {"code": p.get("code"), "items": []}
@@ -68,9 +74,42 @@ def _search(q: str) -> dict:
         return {"code": "error", "msg": str(e)}
 
 
+def _subtitle(bvid: str) -> dict:
+    """获取 B 站视频的 CC 字幕（若有）：view 取 cid -> player 接口取字幕列表 -> 下载字幕。
+
+    返回 {code, subtitle?, lang?, msg?}。无字幕时 code=0 且 subtitle=None。
+    """
+    try:
+        view = _view(bvid)
+        data = view.get("data") or {}
+        cid = (data.get("pages") or [{}])[0].get("cid")
+        if not cid:
+            return {"code": 0, "subtitle": None, "msg": "未获取到 cid"}
+        r = wbi.signed_get(_PLAYER_URL, {"bvid": bvid, "cid": cid})
+        p = r.json()
+        subs = (p.get("data") or {}).get("subtitle", {}).get("subtitles") or []
+        if not subs:
+            return {"code": 0, "subtitle": None, "msg": "该视频未开 B 站 CC 字幕"}
+        sub = subs[0]
+        url = sub.get("subtitle_url")
+        lang = sub.get("lan") or sub.get("lan_doc") or ""
+        if not url:
+            return {"code": 0, "subtitle": None, "msg": "字幕 URL 为空"}
+        rr = wbi.Fetcher.get(
+            url, impersonate="chrome",
+            headers={"User-Agent": wbi.BROWSER_HEADERS["User-Agent"]},
+            timeout=15,
+        )
+        body = (rr.json() or {}).get("body") or []
+        lines = [x.get("content") for x in body if x.get("content")]
+        return {"code": 0, "subtitle": lines, "lang": lang, "cid": cid}
+    except Exception as e:  # noqa: BLE001
+        return {"code": "error", "msg": str(e)}
+
+
 def main() -> None:
     if len(sys.argv) < 3:
-        print(json.dumps({"code": "error", "msg": "usage: view|search <arg>"}))
+        print(json.dumps({"code": "error", "msg": "usage: view|search|subtitle <arg>"}))
         return
     mode = sys.argv[1]
     arg = sys.argv[2]
@@ -78,5 +117,7 @@ def main() -> None:
         print(json.dumps(_view(arg), ensure_ascii=False))
     elif mode == "search":
         print(json.dumps(_search(arg), ensure_ascii=False))
+    elif mode == "subtitle":
+        print(json.dumps(_subtitle(arg), ensure_ascii=False))
     else:
         print(json.dumps({"code": "error", "msg": f"unknown mode {mode}"}))

@@ -13,5 +13,6 @@ requests==2.34.2
 starlette==1.3.1
 uvicorn==0.51.0
 pycryptodome==3.23.0
+tokenizers==0.23.1
 # 网易云 weapi 加密由 backend/app/vendor/weencrypt.py 自实现（MIT），仅依赖 pycryptodome（上方已锁定）
 # scrapling 本地路径：pip install -e ../Scrapling-0.4.12

@@ -2,6 +2,8 @@ import { Link } from "react-router-dom"
 import { Heart } from "lucide-react"
 import { useFavorites } from "../lib/favorites"
 import { Empty } from "../components/ui"
+import { Reveal } from "../lib/motion"
+import { PageHeader } from "../components/PageHeader"
 
 export default function Favorites() {
   const items = useFavorites((s) => s.items)
@@ -9,19 +11,18 @@ export default function Favorites() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">我的 · 收藏</div>
-          <h1>收藏的歌曲</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>{items.length} 首</div>
-      </div>
+      <Reveal>
+      <PageHeader crumb="我的 · 收藏" title="收藏的歌曲" extra={`${items.length} 首`} />
+      </Reveal>
 
       {items.length === 0 ? (
+        <Reveal delay={0.06}>
         <div className="card">
           <Empty label="还没有收藏的歌曲，去单曲详情页点 ♥ 收藏吧" />
         </div>
+        </Reveal>
       ) : (
+        <Reveal delay={0.06}>
         <div className="card" style={{ overflowX: "auto" }}>
           <table className="rank-table">
             <thead>
@@ -53,6 +54,7 @@ export default function Favorites() {
             </tbody>
           </table>
         </div>
+        </Reveal>
       )}
     </>
   )

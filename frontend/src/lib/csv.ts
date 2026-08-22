@@ -63,10 +63,20 @@ const MIME: Record<ExportFormat, string> = {
   md: "text/markdown;charset=utf-8",
 }
 
+/** 取某格式的 MIME 类型。 */
+export function mimeFor(fmt: ExportFormat): string {
+  return MIME[fmt]
+}
+
 /** 触发浏览器下载。CSV 自动加 BOM。 */
 export function downloadText(filename: string, text: string, fmt: ExportFormat): void {
   const payload = fmt === "csv" ? `\uFEFF${text}` : text
-  const blob = new Blob([payload], { type: MIME[fmt] })
+  downloadBytes(filename, new TextEncoder().encode(payload), MIME[fmt] ?? "application/octet-stream")
+}
+
+/** 触发浏览器下载一段字节（用于后台线程产出的数据 / zip）。 */
+export function downloadBytes(filename: string, bytes: Uint8Array, mime: string): void {
+  const blob = new Blob([bytes as BlobPart], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url

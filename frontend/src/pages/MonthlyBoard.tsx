@@ -4,7 +4,9 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import { ChipRow, Spinner, fmtScore } from "../components/ui"
 import { ChartCard } from "../components/ChartCard"
+import { PageHeader } from "../components/PageHeader"
 import { useTheme, getChartPalette } from "../lib/theme"
+import { Reveal } from "../lib/motion"
 
 export default function MonthlyBoard() {
   const [issue, setIssue] = useState<string>("")
@@ -43,31 +45,34 @@ export default function MonthlyBoard() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">榜单 · 自建聚合</div>
-          <h1>月榜</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          由官方周榜按自然月聚合 · 累计得分排序
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb="榜单 · 自建聚合"
+        title="月榜"
+        extra="由官方周榜按自然月聚合 · 累计得分排序"
+      />
+      </Reveal>
       {issuesQ.isLoading ? (
         <Spinner />
       ) : (
         <>
+          <Reveal>
           <ChipRow issues={issues} value={effective} onChange={setIssue} />
+          </Reveal>
           {monthBarOpt && (
+            <Reveal delay={0.06}>
             <ChartCard
               title="当月累计得分 Top 10"
               option={monthBarOpt}
               filename={`monthly-${effective}`}
               badge={`${rankQ.data?.items.length ?? 0} 首`}
             />
+            </Reveal>
           )}
           {rankQ.isLoading ? (
             <Spinner />
           ) : (
+            <Reveal delay={0.12}>
             <div className="card" style={{ overflowX: "auto" }}>
               <div className="card-title">
                 {rankQ.data?.month} · 月榜
@@ -100,6 +105,7 @@ export default function MonthlyBoard() {
                 </tbody>
               </table>
             </div>
+            </Reveal>
           )}
         </>
       )}

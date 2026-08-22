@@ -26,5 +26,14 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/airi/stage",
+    "src/airi/server",
+    "src/airi/memory",
+    "src/airi/audio/audio-context",
+    "src/airi/pipelines/audio/llm-streaming-control",
+    "src/airi/**/*.test.ts",
+    "src/airi/**/*.test.tsx"
+  ]
 }

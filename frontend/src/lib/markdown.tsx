@@ -1,4 +1,5 @@
-import type { ReactNode, ElementType } from "react"
+import type { ReactNode } from "react"
+import { createElement } from "react"
 
 // 轻量 Markdown 渲染（零依赖）：支持 **加粗** *斜体* `代码` [文本](链接) 与 # 标题 / 列表。
 // 用于 AI 聊天消息，避免引入外部 markdown 依赖。
@@ -49,8 +50,7 @@ export function Markdown({ text }: { text: string }) {
     const h = /^(#{1,4})\s+(.*)$/.exec(line)
     if (h) {
       const level = h[1]!.length
-      const Tag = (`h${level}` as unknown) as ElementType
-      blocks.push(<Tag key={key++}>{renderInline(h[2]!)}</Tag>)
+      blocks.push(createElement(`h${level}`, { key: key++ }, renderInline(h[2]!)))
       i++
       continue
     }

@@ -1,16 +1,22 @@
 import { useEffect, useState } from "react"
-import { NavLink, Outlet, useLocation } from "react-router-dom"
+import { Outlet, useLocation, useNavigate } from "react-router-dom"
+import { Menu } from "antd"
+import type { MenuProps } from "antd"
 import {
   LayoutDashboard, Trophy, Crown, CalendarDays, Sun, Clock, Flame, Mic2, Activity,
-  Search, GitCompareArrows, BarChart3, Moon, Sigma, Music2, Heart, Menu, X, Star, Bot,
-  Download, TrendingUp, Database,
+  Search, GitCompareArrows, BarChart3, Moon, Sigma, Music2, Heart, Menu as MenuIcon, X, Star, Bot,
+  Download, TrendingUp, Database, FileText, Settings as SettingsIcon, Sparkles,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import CommandPalette from "./CommandPalette"
 import RefreshButton from "./RefreshButton"
 import ErrorBoundary from "./ErrorBoundary"
 import ManualIngest from "./ManualIngest"
+import Effects from "./Effects"
+import SettingsPanel from "./SettingsPanel"
 import { useTheme } from "../lib/theme"
+import { AnimatePresence, MotionConfig, PageMotion } from "../lib/motion"
+import { useChatStore } from "../airi/store/chat-store"
 
 interface NavItem { label: string; to: string; icon: LucideIcon }
 interface NavGroup { group: string }
@@ -30,6 +36,7 @@ const nav: (NavItem | NavGroup)[] = [
   { label: "P主榜", to: "/artists", icon: Mic2 },
   { label: "歌姬榜", to: "/vocalists", icon: Mic2 },
   { group: "分析" },
+  { label: "预警与洞察", to: "/insights", icon: Activity },
   { label: "歌曲对比", to: "/compare", icon: GitCompareArrows },
   { label: "数据分析", to: "/analytics", icon: BarChart3 },
   { label: "公式与试算", to: "/formula", icon: Sigma },
@@ -37,24 +44,84 @@ const nav: (NavItem | NavGroup)[] = [
   { label: "下期冲榜预测", to: "/predict", icon: TrendingUp },
   { group: "实时" },
   { label: "实时热度", to: "/hot", icon: Activity },
+  { label: "AI 伴侣", to: "__airi__", icon: Sparkles },
   { label: "AI 智能体", to: "/agent", icon: Bot },
   { group: "工具" },
+  { label: "报告与海报", to: "/reports", icon: FileText },
   { label: "数据导出", to: "/export", icon: Download },
-  { group: "网易云" },
-  { label: "网易云", to: "/netease", icon: Music2 },
+  { group: "音乐" },
+  { label: "网易云+QQ", to: "/netease", icon: Music2 },
   { group: "我的" },
   { label: "收藏的歌曲", to: "/favorites", icon: Heart },
+  { label: "特效设置", to: "/settings", icon: SettingsIcon },
 ]
+
+const navItems = nav.filter((n): n is NavItem => !("group" in n))
+
+// 按分组组装 AntD Menu items
+const groups: { group: string; items: NavItem[] }[] = []
+let currentGroup: { group: string; items: NavItem[] } | null = null
+for (const item of nav) {
+  if ("group" in item) {
+    currentGroup = { group: item.group, items: [] }
+    groups.push(currentGroup)
+  } else if (currentGroup) {
+    currentGroup.items.push(item)
+  }
+}
+const antdMenuItems: MenuProps["items"] = groups.map((g) => ({
+  type: "group",
+  label: g.group,
+  children: g.items.map((it) => ({
+    key: it.to,
+    icon: <it.icon size={15} />,
+    label: it.label,
+  })),
+}))
 
 export default function Layout() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [ingestOpen, setIngestOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const { theme, toggle } = useTheme()
   const location = useLocation()
+  const navigate = useNavigate()
+
+  // 计算当前激活的菜单项：优先精确匹配，其次按路径前缀取最长匹配
+  const selectedKey =
+    navItems
+      .map((n) => n.to)
+      .filter((to) => (to === "/" ? location.pathname === "/" : location.pathname === to || location.pathname.startsWith(to + "/")))
+      .sort((a, b) => b.length - a.length)[0] ?? "/"
+
+  const menuProps: MenuProps = {
+    mode: "inline",
+    items: antdMenuItems,
+    selectedKeys: [selectedKey],
+    onClick: ({ key }) => {
+      if (key === "/settings") {
+        setSettingsOpen(true)
+        setSidebarOpen(false)
+        return
+      }
+      if (key === "__airi__") {
+        useChatStore.getState().setOpen(true)
+        setSidebarOpen(false)
+        return
+      }
+      navigate(key)
+      setSidebarOpen(false)
+    },
+  }
 
   // 移动端：路由切换时自动收起抽屉
   useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+
+  // 路由切换时回到顶部：新页面从头部开始阅读，避免停留在上一页滚动位置
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" })
+  }, [location.pathname])
 
   // 抽屉开启时锁定 body 滚动
   useEffect(() => {
@@ -75,6 +142,7 @@ export default function Layout() {
   }, [])
 
   return (
+    <MotionConfig reducedMotion="user">
     <div className="layout">
       <div
         className={`sidebar-backdrop${sidebarOpen ? " show" : ""}`}
@@ -119,25 +187,13 @@ export default function Layout() {
           <Database size={13} />
           <span>手动入库</span>
         </button>
-        {nav.map((item, i) =>
-          "group" in item ? (
-            <div className="nav-group" key={i}>{item.group}</div>
-          ) : (
-            <NavLink
-              key={i}
-              to={item.to}
-              end={item.to === "/"}
-              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-            >
-              <item.icon />
-              {item.label}
-            </NavLink>
-          ),
-        )}
+        <div className="sidebar-menu">
+          <Menu {...menuProps} />
+        </div>
       </aside>
       <div className="mobile-topbar">
         <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="打开菜单">
-          <Menu size={20} />
+          <MenuIcon size={20} />
         </button>
         <div className="brand-mini">
           <span className="bm-mark" aria-hidden="true">
@@ -155,12 +211,19 @@ export default function Layout() {
         </button>
       </div>
       <main className="main">
-        <ErrorBoundary>
-          <Outlet />
-        </ErrorBoundary>
+        <AnimatePresence mode="wait">
+          <PageMotion key={location.pathname}>
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
+          </PageMotion>
+        </AnimatePresence>
       </main>
+      <Effects />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <ManualIngest open={ingestOpen} onClose={() => setIngestOpen(false)} />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+    </MotionConfig>
   )
 }

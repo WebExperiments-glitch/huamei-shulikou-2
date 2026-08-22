@@ -1,18 +1,23 @@
 import type { ReactNode } from "react"
+import { Spin, Empty as AntEmpty } from "antd"
 import type { RankEntry } from "../lib/types"
 import { escapeCsvCell } from "../lib/csv"
 
 export function Spinner({ label = "加载中…", size = 16 }: { label?: string | null; size?: number }) {
   return (
     <div className="loading" style={{ fontSize: size > 16 ? undefined : size }}>
-      <div className="spinner" style={{ width: size, height: size, borderWidth: Math.max(2, size / 8) }} />
+      <Spin size={size >= 32 ? "large" : "small"} />
       {label}
     </div>
   )
 }
 
 export function Empty({ label = "暂无数据" }: { label?: string }) {
-  return <div className="empty">{label}</div>
+  return (
+    <div className="empty">
+      <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description={label} />
+    </div>
+  )
 }
 
 export function fmt(n: number | null | undefined): string {

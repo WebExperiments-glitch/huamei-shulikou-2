@@ -7,6 +7,7 @@ import type {
 } from "../lib/types"
 import { Spinner, fmt, fmtDate } from "../components/ui"
 import { useNeteasePlayer } from "../lib/neteasePlayer"
+import { AnimatedNumber, TypewriterText } from "../lib/fx"
 import {
   Music2, ArrowLeft, ExternalLink, Copy, Check, Clock, Flame, Mic2, Disc, ListMusic,
   Calendar, Building2, Tag, Heart, MessageCircle, AlertCircle, PlayCircle, User, Play, Pause,
@@ -31,10 +32,12 @@ function fmtDur(ms?: number | null) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 }
 
+type DetailData = NeteaseDetail | NeteaseArtistDetail | NeteaseAlbumDetail | NeteasePlaylistDetail
+
 export default function NeteaseDetail() {
   const { kind, id } = useParams()
   const navigate = useNavigate()
-  const [data, setData] = useState<any>(null)
+  const [data, setData] = useState<DetailData | null>(null)
   const [lyric, setLyric] = useState<NeteaseLyric | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -70,8 +73,8 @@ export default function NeteaseDetail() {
         } else {
           setError("未知的内容类型")
         }
-      } catch (e: any) {
-        setError(e?.message ?? String(e))
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
       } finally {
         setLoading(false)
       }
@@ -157,7 +160,7 @@ function SongView({
         <div className="ne-cover-lg" style={{ backgroundImage: data.album_pic ? `url(${data.album_pic})` : undefined }}>
           {!data.album_pic && <Music2 size={56} />}
         </div>
-        <h1 className="ne-d-name">{data.name}</h1>
+        <h1 className="ne-d-name"><TypewriterText text={data.name} /></h1>
         {data.alias && data.alias.length > 0 && (
           <div className="ne-d-alias">{data.alias.join(" / ")}</div>
         )}
@@ -218,12 +221,12 @@ function ArtistView({ data }: { data: NeteaseArtistDetail }) {
           {!data.pic && <Mic2 size={54} />}
         </div>
         <div className="ne-head-info">
-          <h1 className="ne-d-name">{data.name}</h1>
+          <h1 className="ne-d-name"><TypewriterText text={data.name} /></h1>
           {data.alias && data.alias.length > 0 && <div className="ne-d-alias">{data.alias.join(" / ")}</div>}
           {data.brief_desc && <p className="ne-bio">{data.brief_desc}</p>}
           <div className="ne-stat-inline">
             {stats.map((s, i) => (
-              <span key={i} className="ne-stat-chip"><s.icon size={13} /> {s.value ?? "—"} {s.label}</span>
+              <span key={i} className="ne-stat-chip"><s.icon size={13} /> {typeof s.value === "number" ? <AnimatedNumber value={s.value} /> : s.value} {s.label}</span>
             ))}
           </div>
           <button className="ne-primary" onClick={onExternal}><ExternalLink size={14} /> 在网易云打开</button>
@@ -254,12 +257,12 @@ function AlbumView({ data }: { data: NeteaseAlbumDetail }) {
         </div>
         <div className="ne-head-info">
           <div className="ne-kind-tag"><Disc size={12} /> 专辑</div>
-          <h1 className="ne-d-name">{data.name}</h1>
+          <h1 className="ne-d-name"><TypewriterText text={data.name} /></h1>
           <div className="ne-d-artists"><Mic2 size={14} /> {data.artist || "—"}</div>
           <div className="ne-meta-line">
             {data.publish_time && <span><Calendar size={13} /> {fmtDate(data.publish_time / 1000)}</span>}
             {data.company && <span><Building2 size={13} /> {data.company}</span>}
-            {data.size != null && <span><ListMusic size={13} /> {data.size} 首</span>}
+            {data.size != null && <span><ListMusic size={13} /> <AnimatedNumber value={data.size} /> 首</span>}
           </div>
           <button className="ne-primary" onClick={onExternal}><ExternalLink size={14} /> 在网易云打开</button>
           {(data.songs?.length ?? 0) > 0 && (
@@ -289,13 +292,13 @@ function PlaylistView({ data }: { data: NeteasePlaylistDetail }) {
         </div>
         <div className="ne-head-info">
           <div className="ne-kind-tag"><ListMusic size={12} /> 歌单</div>
-          <h1 className="ne-d-name">{data.name}</h1>
+          <h1 className="ne-d-name"><TypewriterText text={data.name} /></h1>
           <div className="ne-d-artists"><User size={14} /> by {data.creator || "未知"}</div>
           <div className="ne-meta-line">
             {data.tags && data.tags.length > 0 && <span><Tag size={13} /> {data.tags.join(" / ")}</span>}
-            {data.play_count != null && <span><Flame size={13} /> 播放 {fmt(data.play_count)}</span>}
-            {data.subscribed_count != null && <span><Heart size={13} /> 收藏 {fmt(data.subscribed_count)}</span>}
-            {data.track_count != null && <span><ListMusic size={13} /> {data.track_count} 首</span>}
+            {data.play_count != null && <span><Flame size={13} /> 播放 <AnimatedNumber value={data.play_count} formatter={fmt} /></span>}
+            {data.subscribed_count != null && <span><Heart size={13} /> 收藏 <AnimatedNumber value={data.subscribed_count} formatter={fmt} /></span>}
+            {data.track_count != null && <span><ListMusic size={13} /> <AnimatedNumber value={data.track_count} /> 首</span>}
           </div>
           {data.description && <p className="ne-bio ne-bio-clamp">{data.description}</p>}
           <button className="ne-primary" onClick={onExternal}><ExternalLink size={14} /> 在网易云打开</button>
@@ -390,7 +393,7 @@ function TrackList({ tracks, pageSize = 50 }: { tracks: NeteaseTrack[]; pageSize
                 {isCurrent && player.isPlaying ? <Pause size={14} /> : <Play size={14} />}
               </button>
               <div className="ne-track-no">{String(page * pageSize + i + 1).padStart(2, "0")}</div>
-              <div className="ne-track-pic">{t.pic ? <img src={t.pic} alt="" /> : <Music2 size={14} />}</div>
+              <div className="ne-track-pic">{t.pic ? <img src={t.pic} alt="" referrerPolicy="no-referrer" /> : <Music2 size={14} />}</div>
               <div className="ne-track-main">
                 <div className="ne-track-name" title={t.name}>{t.name}</div>
                 <div className="ne-track-artist">{t.artists?.join(" / ") || "—"}{t.album ? ` · 《${t.album}》` : ""}</div>

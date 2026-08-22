@@ -1,10 +1,12 @@
-# ===== 依赖 =====
+﻿# ===== 依赖 =====
 node_modules/
 __pycache__/
 *.pyc
 *.egg-info/
 .venv/
 venv/
+# npm 锁文件（项目用 npm；pnpm-lock 为混用残留，不提交）
+pnpm-lock.yaml
 
 # ===== 构建产物 =====
 dist/
@@ -31,6 +33,7 @@ backend/.webfetch_test/
 
 # ===== 本地工作区 / 记忆（不对外）=====
 .workbuddy/
+.jez/
 
 # ===== 编辑器 / 系统 =====
 .idea/
@@ -57,6 +60,25 @@ backend_runtime.log
 
 # ===== 第三方库 vendoring（BSD-3-Clause 宽松，允许随仓库发布；若需更轻量可删此目录并改 requirements.txt 指向 PyPI）=====
 # Scrapling-0.4.12/
+
+# ===== 大型第三方框架源码（只读参考/下载包，非项目运行时依赖，不进版本库）=====
+# 这些是硬盘上的第三方源码，体积巨大且与项目源码无运行时引用关系。
+# 说明：dsh(1.5GB koishi)、airi_src(530MB)、airi_latest(575MB)、airi(2MB)、
+#       sonic-topography(488MB)、deepseek_v3_tokenizer(7.7MB)。
+#       注意：规则行不写行内注释——git 对含中文的行内注释解析可能失效，说明统一放这里。
+dsh/
+airi/
+airi_src/
+airi_latest/
+sonic-topography/
+sonic-topography-master.zip
+deepseek_v3_tokenizer/
+airi-main.zip
+download_airi.ps1
+
+# ===== 打包/下载遗留 =====
+*.zip
+start_all.bat
 
 # ===== 已弃用：netease_encode_api（AGPLv3，与本项目 CC BY-NC 4.0 不兼容）=====
 # 本地备份保留在磁盘，但不进入开源版本库；其搜索/详情/评论功能已由

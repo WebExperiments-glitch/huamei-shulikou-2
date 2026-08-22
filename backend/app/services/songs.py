@@ -70,7 +70,9 @@ def _board_stats(conn: sqlite3.Connection) -> dict[str, dict]:
                 bvid = (bvid or "").upper()
                 s = stats.setdefault(bvid, {"weeks": 0, "best_rank": 999, "boards": set(), "last_issue": ""})
                 s["weeks"] += 1
-                s["best_rank"] = min(s["best_rank"], rank)
+                # rank 可能为 NULL（个别表未收录排名），跳过以免 min() 抛 TypeError
+                if rank is not None:
+                    s["best_rank"] = min(s["best_rank"], rank)
                 s["boards"].add(bt)
                 if key > s["last_issue"]:
                     s["last_issue"] = key
@@ -322,7 +324,11 @@ def search_songs(
     elif sort == "weeks":
         items.sort(key=lambda d: d.get("weeks_on_board") or 0, reverse=reverse)
     elif sort == "best_rank":
-        items.sort(key=lambda d: d.get("best_rank") or 999, reverse=reverse)
+        # 未上榜（best_rank=None）恒排最后，不随 asc/desc 跳到最前
+        has = [d for d in items if d.get("best_rank") is not None]
+        none = [d for d in items if d.get("best_rank") is None]
+        has.sort(key=lambda d: d["best_rank"], reverse=reverse)
+        items = has + none
     elif sort == "pubtime":
         items.sort(key=lambda d: d.get("pubtime") or 0, reverse=reverse)
     else:  # id
@@ -463,22 +469,36 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
             return 0
 
     entries = []
-    prev_issue = None
     for raw in history:
         r = norm(raw)
         issue = r.get("issue", "")
         idx = issue_index.get(issue, 0)
+        # 四代分代（与 rank.py / boards._recalc 口径一致；详见 docs/公式演变.md）：
+        #   <54 远古 / 54-102 中间 / 103-110 现行早期 / 111+ 现行。
+        # formula_version 对前端仍是 old/new 二值（types.ts 契约），权重与 t 按四代细分。
         is_old = board_type == "weekly" and idx > 0 and idx < rank_svc.NEW_FORMULA_FROM_ISSUE
+        is_mid = board_type == "weekly" and rank_svc.NEW_FORMULA_FROM_ISSUE <= idx < rank_svc.CONTINUOUS_FORMULA_FROM_ISSUE
+        is_early = board_type == "weekly" and rank_svc.CONTINUOUS_FORMULA_FROM_ISSUE <= idx < rank_svc.CONTINUOUS_CURRENT_FROM_ISSUE
         formula_version = "old" if is_old else "new"
-        w = rank_svc.OLD_WEIGHTS if is_old else rank_svc.DEFAULT_WEIGHTS
+        if is_old:
+            w = rank_svc.OLD_WEIGHTS
+        elif is_mid:
+            w = rank_svc.MID_WEIGHTS
+        elif is_early:
+            w = rank_svc.CONTINUOUS_EARLY_WEIGHTS
+        else:
+            w = rank_svc.DEFAULT_WEIGHTS
 
         cur_ts = ts_of(issue)
-        # 时间修正锚点：新公式以「周期起点（前一期截止 = cur_ts − 7 天）」为锚；
+        # 时间修正锚点：中间/现行公式以「周期起点（前一期截止 = cur_ts − 7 天）」为锚；
         # 旧公式以本周期结束为锚 = cur_ts（D = floor((end-pub)/86400)）。
         if formula_version == "new":
             anchor = cur_ts - 7 * 86400  # 修正：周期起点 = 本 issue 起点，非 issue 当天（周期终点）
             pub = r.get("pubtime") or song_pub
-            t = rank_svc.time_correction(int(pub or 0), anchor) if pub else 1.0
+            if is_mid:
+                t = rank_svc.time_correction_mid(int(pub or 0), anchor) if pub else 1.0
+            else:
+                t = rank_svc.time_correction(int(pub or 0), anchor) if pub else 1.0
             t_assumed = pub is None
         else:
             anchor = cur_ts
@@ -532,7 +552,6 @@ def score_breakdown(conn, bvid: str, board_type: str = "weekly") -> dict:
             "comp_like": round(comp_like, 2) if comp_like is not None else None,
             "comp_coin": round(comp_coin, 2) if comp_coin is not None else None,
         })
-        prev_issue = issue
 
     return {
         "bvid": bvid,
@@ -608,7 +627,6 @@ def formula_compare(conn, bvid: str, board_type: str = "weekly") -> dict:
         }
 
     entries = []
-    prev_issue = None
     for raw in history:
         r = norm(raw)
         issue = r.get("issue", "")
@@ -616,9 +634,10 @@ def formula_compare(conn, bvid: str, board_type: str = "weekly") -> dict:
         is_old = board_type == "weekly" and idx > 0 and idx < rank_svc.NEW_FORMULA_FROM_ISSUE
         official_version = "old" if is_old else "new"
         cur_ts = ts_of(issue)
-        # 时间修正锚点：新公式以「本周起点（前一期截止）」为锚 = 当前 issue 起点 cur_ts；
-        # 注意 prev_issue 对应的是上一期起点（≠ 本期起点），必须用本期 cur_ts 作锚。
-        anchor_new = cur_ts
+        # 时间修正锚点：新公式以「本周起点（前一期截止）」为锚 = cur_ts − 7 天
+        # （与 score_breakdown / boards._recalc 同口径；若直接用结算日 cur_ts 会把
+        #   delta 多算 7 天，t 被系统性放大，新旧公式对比失真）。
+        anchor_new = cur_ts - 7 * 86400
         anchor_old = cur_ts
         t_new = rank_svc.time_correction(int(pub or 0), anchor_new) if pub else 1.0
         t_old = rank_svc.time_correction_old(int(pub or 0), anchor_old) if pub else 2.47
@@ -640,7 +659,6 @@ def formula_compare(conn, bvid: str, board_type: str = "weekly") -> dict:
             "old": {**old_c, "total": round((old_c["comp_view"] or 0) + (old_c["comp_favorite"] or 0) + (old_c["comp_like"] or 0) + (old_c["comp_coin"] or 0), 2)},
             "new": {**new_c, "total": round((new_c["comp_view"] or 0) + (new_c["comp_favorite"] or 0) + (new_c["comp_like"] or 0) + (new_c["comp_coin"] or 0), 2)},
         })
-        prev_issue = issue
 
     return {"bvid": bvid, "board_type": board_type, "entries": entries}
 

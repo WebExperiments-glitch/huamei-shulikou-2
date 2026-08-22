@@ -5,6 +5,8 @@ import { ArrowUp, ArrowDown, ExternalLink } from "lucide-react"
 import { api } from "../lib/api"
 import { Autocomplete, type Suggestion } from "../components/Autocomplete"
 import { Empty, Spinner, fmt } from "../components/ui"
+import { Reveal } from "../lib/motion"
+import { PageHeader } from "../components/PageHeader"
 
 const PAGE_SIZE = 50
 
@@ -89,16 +91,15 @@ export function ArtistBoard({
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">{crumb}</div>
-          <h1>{title}</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          {total.toLocaleString()} 位{title.replace("榜", "")} · 点击行查看其全部歌曲
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb={crumb}
+        title={title}
+        extra={`${total.toLocaleString()} 位${title.replace("榜", "")} · 点击行查看其全部歌曲`}
+      />
+      </Reveal>
 
+      <Reveal delay={0.06}>
       <div className="card">
         <div className="lib-filters">
           <Autocomplete
@@ -223,6 +224,7 @@ export function ArtistBoard({
           战力分 = 总播放(百万计)×1 + 上榜期数×3 + 传说曲×200 + 神话曲×1000（透明加权，综合衡量持续产出与爆款能力）。
         </div>
       </div>
+      </Reveal>
     </>
   )
 }

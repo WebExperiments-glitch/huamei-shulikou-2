@@ -5,11 +5,32 @@ import { api } from "../lib/api"
 import { ChipRow, Empty, Spinner } from "../components/ui"
 import { SkeletonTable } from "../components/Skeleton"
 import { RankTable } from "../components/RankTable"
+import { PageHeader } from "../components/PageHeader"
+import { Badge } from "../components/ui/badge"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip"
+import { Reveal } from "../lib/motion"
+import { TypewriterText } from "../lib/fx"
 
 const TITLES: Record<string, string> = {
   weekly: "周榜",
   legend: "传说曲周榜",
   annual: "年榜 / 半年榜",
+}
+
+// 四代公式说明（与后端 rank.py 分代口径一致）：
+//   old(<54) / mid(54-102) / early(103-110) / current(≥111)
+type FormulaGen = "old" | "mid" | "early" | "current"
+const FORMULA_LABEL: Record<FormulaGen, string> = {
+  old: "旧公式",
+  mid: "过渡公式",
+  early: "现行早期",
+  current: "现行公式",
+}
+const FORMULA_TEXT: Record<FormulaGen, string> = {
+  old: "得分 = 2·Δ播放×t + Δ收藏×30 + Δ点赞×3 + Δ投币×10",
+  mid: "得分 = Δ播放×t + Δ收藏×30 + Δ点赞×3 + Δ投币×10",
+  early: "得分 = Δ播放×t + Δ收藏×30 + Δ点赞×3 + Δ投币×15",
+  current: "得分 = Δ播放×t + Δ收藏×15 + Δ点赞×3 + Δ投币×30",
 }
 
 function ReentriesView({ boardType }: { boardType: string }) {
@@ -90,20 +111,20 @@ export default function OfficialBoard() {
   const issues = issuesQ.data?.issues ?? []
   const currentIssue = issues.find(i => i.issue === effectiveIssue)
   const formulaVersion = currentIssue?.formula_version ?? "new"
+  const formulaGen: FormulaGen = currentIssue?.formula_gen ?? "current"
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">榜单 · {TITLES[type] ?? type}</div>
-          <h1>{TITLES[type] ?? type}</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          {issues.length} 期 · 数据范围 {issues[issues.length - 1]?.issue} ~ {issues[0]?.issue}
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb={<>榜单 · {TITLES[type] ?? type}</>}
+        title={<TypewriterText text={TITLES[type] ?? type} />}
+        extra={`${issues.length} 期 · 数据范围 ${issues[issues.length - 1]?.issue} ~ ${issues[0]?.issue}`}
+      />
+      </Reveal>
 
       {type === "legend" && (
+        <Reveal delay={0.06}>
         <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
           <button
             className="chip"
@@ -120,14 +141,18 @@ export default function OfficialBoard() {
             历史二次上榜
           </button>
         </div>
+        </Reveal>
       )}
 
       {showReentry ? (
+        <Reveal>
         <ReentriesView boardType={type} />
+        </Reveal>
       ) : issuesQ.isLoading ? (
         <Spinner />
       ) : (
         <>
+          <Reveal>
           <div className="issue-picker">
             <ChipRow
               issues={issues}
@@ -135,17 +160,19 @@ export default function OfficialBoard() {
               onChange={setIssue}
             />
           </div>
+          </Reveal>
           {type === "weekly" && (
+            <Reveal delay={0.06}>
             <div className="formula-note" style={{ marginBottom: 12 }}>
               <span className={`formula-dot ${formulaVersion === "old" ? "formula-old" : "formula-new"}`} />
               <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
-                {formulaVersion === "old"
-                  ? "本期使用旧公式：得分 = Δ播放×t×2 + Δ收藏×30 + Δ点赞×3 + Δ投币×10"
-                  : "本期使用新公式：得分 = Δ播放×t + Δ收藏×15 + Δ点赞×3 + Δ投币×30"}
-                {" · "}第 54 期为分界（2025-06-17 起）
+                {FORMULA_LABEL[formulaGen]}：{FORMULA_TEXT[formulaGen]}
+                {" · "}分界：第 54 / 103 / 111 期
               </span>
             </div>
+            </Reveal>
           )}
+          <Reveal delay={0.12}>
           {rankQ.isLoading ? (
             <div className="card" style={{ padding: 20 }}><SkeletonTable rows={20} /></div>
           ) : rankQ.error ? (
@@ -154,10 +181,24 @@ export default function OfficialBoard() {
             <div className="card" style={{ overflowX: "auto" }}>
               <div className="card-title">
                 {effectiveIssue} 期
-                <span className={`badge formula-badge ${formulaVersion === "old" ? "formula-old" : "formula-new"}`}>
-                  {formulaVersion === "old" ? "旧公式" : "新公式"}
-                </span>
-                <span className="badge">{rankQ.data?.items.length ?? 0} 首</span>
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge
+                        variant={formulaVersion === "old" ? "secondary" : "default"}
+                        className={`cursor-help ${formulaVersion === "old" ? "formula-old" : "formula-new"}`}
+                      >
+                        {FORMULA_LABEL[formulaGen]}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+                        {FORMULA_TEXT[formulaGen]}
+                      </span>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Badge variant="outline">{rankQ.data?.items.length ?? 0} 首</Badge>
               </div>
               <RankTable
                 items={rankQ.data?.items ?? []}
@@ -170,6 +211,7 @@ export default function OfficialBoard() {
               />
             </div>
           )}
+          </Reveal>
         </>
       )}
     </>

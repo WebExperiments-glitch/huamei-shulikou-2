@@ -1,23 +1,14 @@
-﻿import { useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowDown, ArrowUp, Download } from "lucide-react"
+import { Download, Search } from "lucide-react"
 import { Link } from "react-router-dom"
+import { Button, Input, Space, Table, Tooltip } from "antd"
+import type { ColumnsType } from "antd/es/table"
 import type { RankEntry } from "../lib/types"
 import { fmt, fmtScore, rankClass, Rate, downloadCSV, downloadJSON, rankItemsToExport } from "./ui"
 import { api } from "../lib/api"
 import { useTheme } from "../lib/theme"
-
-type SortKey = "rank" | "view" | "favorite" | "coin" | "like" | "score" | "weeks"
-
-const ACCESSORS: Record<SortKey, (it: RankEntry) => number> = {
-  rank: (it) => it.rank,
-  view: (it) => it.view,
-  favorite: (it) => it.favorite,
-  coin: (it) => it.coin,
-  like: (it) => it.like,
-  score: (it) => it.score,
-  weeks: (it) => it.weeks_on_board ?? 0,
-}
+import { AnimatedNumber, RankBadge } from "../lib/fx"
 
 export function RankTable({
   items,
@@ -38,8 +29,6 @@ export function RankTable({
   issue?: string
   sparkline?: boolean
 }) {
-  const [sortKey, setSortKey] = useState<SortKey>("rank")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const [filter, setFilter] = useState("")
 
   const filtered = useMemo(() => {
@@ -59,157 +48,196 @@ export function RankTable({
     })
   }, [items, filter])
 
-  const sorted = useMemo(() => {
-    if (!sortable) return filtered
-    const acc = ACCESSORS[sortKey]
-    const dir = sortDir === "asc" ? 1 : -1
-    return [...filtered].sort((a, b) => (acc(a) - acc(b)) * dir)
-  }, [filtered, sortable, sortKey, sortDir])
-
   const hasView = items.some((it) => (it.view ?? 0) > 0)
 
+  // 走势窗口大小：年/半年榜一年最多 2 期，需要更大窗口才能拉出趋势；
+  // 周榜/传说曲 1 周 1 期，10 周足够。annual 上限设为 30 期（≈15 年），与后端 Query 上限对齐。
+  const sparkCount = boardType === "annual" ? 30 : 10
   const { data: sparkData } = useQuery({
-    queryKey: ["sparklines", boardType, issue],
-    queryFn: () => api.boardSparklines(boardType!, issue!, 10),
+    queryKey: ["sparklines", boardType, issue, sparkCount],
+    queryFn: () => api.boardSparklines(boardType!, issue!, sparkCount),
     enabled: !!sparkline && !!boardType && !!issue,
   })
   const sparkMap = sparkData?.sparklines ?? {}
 
-  const onSort = (key: SortKey) => {
-    if (!sortable) return
-    if (key === sortKey) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"))
-    } else {
-      setSortKey(key)
-      // 数值类默认从高到低更直观
-      setSortDir(key === "rank" ? "asc" : "desc")
-    }
-  }
+  const numSorter = (k: "view" | "favorite" | "coin" | "like" | "score") =>
+    sortable ? (a: RankEntry, b: RankEntry) => (a[k] ?? 0) - (b[k] ?? 0) : undefined
 
-  const Th = ({ k, label, right = true }: { k?: SortKey; label: string; right?: boolean }) => {
-    const active = k && sortable && k === sortKey
-    return (
-      <th
-        className={right ? "num-th" : ""}
-        onClick={k ? () => onSort(k) : undefined}
-        style={{ cursor: k && sortable ? "pointer" : "default", userSelect: "none" }}
-      >
-        {label}
-        {active && (
-          <span style={{ marginLeft: 4, color: "var(--accent)" }}>
-            {sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
-          </span>
-        )}
-      </th>
-    )
-  }
+  const columns = useMemo<ColumnsType<RankEntry>>(() => {
+    const cols: ColumnsType<RankEntry> = [
+      {
+        title: "#",
+        dataIndex: "rank",
+        width: 64,
+        sorter: sortable ? (a, b) => a.rank - b.rank : undefined,
+        defaultSortOrder: sortable ? "ascend" : undefined,
+        render: (r: number, it) => <RankBadge rank={r} rate={it.rate} lastRank={it.last_rank} weeksOnBoard={it.weeks_on_board} className={rankClass(r)} />,
+      },
+      {
+        title: "歌曲",
+        dataIndex: "title",
+        render: (_, it) => (
+          <Link to={`/song/${it.bvid}`} className="song-cell">
+            <span className="t">{it.title}</span>
+            {it.title_cn && <span className="t-cn">{it.title_cn}</span>}
+          </Link>
+        ),
+      },
+      {
+        title: "P主",
+        render: (_, it) => (
+          <span className="num">{it.producers?.map((p) => p.name).join(" / ") ?? "—"}</span>
+        ),
+      },
+      {
+        title: "歌姬",
+        render: (_, it) => (
+          <span className="num">{it.vocalists?.map((v) => v.name).join(" / ") ?? "—"}</span>
+        ),
+      },
+    ]
+
+    if (showStats) {
+      if (hasView) {
+        cols.push({
+          title: "播放",
+          dataIndex: "view",
+          align: "right",
+          sorter: numSorter("view"),
+          render: (v: number) => <span className="num">{fmt(v)}</span>,
+        })
+      }
+      ;(["favorite", "coin", "like"] as const).forEach((k) => {
+        cols.push({
+          title: k === "favorite" ? "收藏" : k === "coin" ? "硬币" : "点赞",
+          dataIndex: k,
+          align: "right",
+          sorter: numSorter(k),
+          render: (v: number) => <span className="num">{fmt(v)}</span>,
+        })
+      })
+    }
+
+    cols.push({
+      title: "得分",
+      dataIndex: "score",
+      align: "right",
+      sorter: numSorter("score"),
+      render: (s: number, it) => (
+        <AnimatedNumber
+          value={s}
+          formatter={fmtScore}
+          startDelay={Math.min(it.rank, 30) * 30}
+          className="score-cell"
+        />
+      ),
+    })
+
+    if (showRate) {
+      cols.push({
+        title: "涨跌",
+        align: "right",
+        width: 84,
+        render: (_, it) => <Rate rate={it.rate} />,
+      })
+    }
+
+    if (sparkline) {
+      cols.push({
+        title: "走势",
+        align: "center",
+        width: 104,
+        render: (_, it) =>
+          sparkMap[it.bvid] ? (
+            <Sparkline data={sparkMap[it.bvid] ?? []} />
+          ) : (
+            <span style={{ color: "var(--text-faint)", fontSize: 11 }}>—</span>
+          ),
+      })
+    }
+
+    return cols
+  }, [items, showStats, showRate, sortable, sparkline, hasView, sparkMap])
 
   const doExportCSV = () => {
-    const { headers, rows } = rankItemsToExport(sorted)
+    const { headers, rows } = rankItemsToExport(filtered)
     downloadCSV(headers, rows, exportName ?? "ranking")
   }
-  const doExportJSON = () => downloadJSON(sorted, exportName ?? "ranking")
+  const doExportJSON = () => downloadJSON(filtered, exportName ?? "ranking")
 
   if (!items || items.length === 0) return null
 
   return (
     <>
       {exportName && (
-        <div className="board-toolbar">
-          <input
-            type="text"
+        <div className="board-toolbar" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <Input
+            allowClear
+            prefix={<Search size={14} style={{ color: "var(--text-faint)" }} />}
             placeholder="筛选：标题 / P主 / 歌姬 / bvid"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             style={{ maxWidth: 280 }}
           />
-          <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{sorted.length} / {items.length} 首</span>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-            <button className="chip" onClick={doExportCSV}>
-              <Download size={12} style={{ marginRight: 4, verticalAlign: -2 }} />CSV
-            </button>
-            <button className="chip" onClick={doExportJSON}>
-              <Download size={12} style={{ marginRight: 4, verticalAlign: -2 }} />JSON
-            </button>
-          </div>
+          <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{filtered.length} / {items.length} 首</span>
+          <Space style={{ marginLeft: "auto" }}>
+            <Tooltip title="导出为 CSV">
+              <Button size="small" icon={<Download size={13} />} onClick={doExportCSV}>CSV</Button>
+            </Tooltip>
+            <Tooltip title="导出为 JSON">
+              <Button size="small" icon={<Download size={13} />} onClick={doExportJSON}>JSON</Button>
+            </Tooltip>
+          </Space>
         </div>
       )}
-      <table className="rank-table">
-        <thead>
-          <tr>
-            <Th k="rank" label="#" right={false} />
-            <th>歌曲</th>
-            <th>P主</th>
-            <th>歌姬</th>
-            {showStats && (
-              <>
-                {hasView && <Th k="view" label="播放" />}
-                <Th k="favorite" label="收藏" />
-                <Th k="coin" label="硬币" />
-                <Th k="like" label="点赞" />
-              </>
-            )}
-            <Th k="score" label="得分" />
-            {showRate && <th style={{ width: 84, textAlign: "right" }}>涨跌</th>}
-            {sparkline && <th style={{ width: 104, textAlign: "center" }}>走势</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((it) => (
-            <tr key={`${it.bvid}-${it.rank}`} className={rankClass(it.rank)}>
-              <td className="rank-no">{it.rank}</td>
-              <td className="song-cell">
-                <Link to={`/song/${it.bvid}`}>
-                  <span className="t">{it.title}</span>
-                  {it.title_cn && <span className="t-cn">{it.title_cn}</span>}
-                </Link>
-              </td>
-              <td className="num">{it.producers?.map((p) => p.name).join(" / ") ?? "—"}</td>
-              <td className="num">{it.vocalists?.map((v) => v.name).join(" / ") ?? "—"}</td>
-              {showStats && (
-                <>
-                  {hasView && <td className="num">{fmt(it.view)}</td>}
-                  <td className="num">{fmt(it.favorite)}</td>
-                  <td className="num">{fmt(it.coin)}</td>
-                  <td className="num">{fmt(it.like)}</td>
-                </>
-              )}
-              <td className="score-cell">
-                {fmtScore(it.score)}
-              </td>
-              {showRate && (
-                <td style={{ textAlign: "right" }}><Rate rate={it.rate} /></td>
-              )}
-              {sparkline && (
-                <td style={{ padding: "4px 8px", textAlign: "center" }}>
-                  {sparkMap[it.bvid] ? (
-                    <Sparkline data={sparkMap[it.bvid] ?? []} />
-                  ) : (
-                    <span style={{ color: "var(--text-faint)", fontSize: 11 }}>—</span>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Table<RankEntry>
+        rowKey={(it) => `${it.bvid}-${it.rank}`}
+        columns={columns}
+        dataSource={filtered}
+        size="small"
+        pagination={false}
+        rowClassName={(it) => [rankClass(it.rank), it.last_rank == null && it.weeks_on_board === 1 ? "row-new" : ""].filter(Boolean).join(" ")}
+        scroll={{ x: true }}
+      />
     </>
   )
 }
 
-/** 行内迷你排名走势：低排名在上方（逆袭/衰退一目了然），颜色按窗口首尾变化着色。 */
+/** 行内迷你排名走势：低排名在上方（逆袭/衰退一目了然），颜色按窗口首尾变化着色。
+ *  数据语义：序列按时间升序，None 表示该期未上榜。对年/半年榜（半年/年度结算）
+ *  一首歌可能只在最近 1-2 期有数据，单点也画圆点（"新进榜"指示），让"无数据"和
+ *  "刚出现"有清晰区分。 */
 export function Sparkline({ data }: { data: (number | null)[] }) {
   const { theme } = useTheme()
   const pts = data
     .map((v, i) => ({ v, i }))
     .filter((p): p is { v: number; i: number } => p.v != null)
-  if (pts.length < 2) {
+  if (pts.length === 0) {
     return <span style={{ color: "var(--text-faint)", fontSize: 11 }}>—</span>
   }
   const W = 92
   const H = 22
   const pad = 2
   const maxR = Math.max(...pts.map((p) => p.v), 10)
+  const colorByTone = (improved: boolean, flat: boolean) => flat
+    ? (theme === "dark" ? "#7d8aa5" : "#6b7589")
+    : improved
+      ? "#66e39f"
+      : "#ff6b6b"
+
+  // 单点：画一个居中圆点（"新进榜"提示，避免被误认为无数据）
+  if (pts.length === 1) {
+    const y = pad + ((pts[0]!.v - 1) / (maxR - 1)) * (H - pad * 2)
+    return (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block", margin: "0 auto" }}
+        aria-label={`仅 1 期上榜，排名 ${pts[0]!.v}`}>
+        <circle cx={W / 2} cy={y} r={3.5}
+          fill={colorByTone(false, true)} opacity={0.85} />
+        <title>仅 1 期上榜（年/半年榜新进歌曲）</title>
+      </svg>
+    )
+  }
+
   const n = pts.length
   const coords = pts.map((p, idx) => {
     const x = pad + (idx / (n - 1)) * (W - pad * 2)
@@ -221,13 +249,7 @@ export function Sparkline({ data }: { data: (number | null)[] }) {
   const last = pts[n - 1]!.v
   const improved = last < first
   const flat = last === first
-  const color = flat
-    ? theme === "dark"
-      ? "#7d8aa5"
-      : "#6b7589"
-    : improved
-      ? "#66e39f"
-      : "#ff6b6b"
+  const color = colorByTone(improved, flat)
   const d = coords
     .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`)
     .join(" ")

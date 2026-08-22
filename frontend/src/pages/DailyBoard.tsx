@@ -3,7 +3,9 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import { ChipRow, Spinner, fmt, fmtScore } from "../components/ui"
 import { ChartCard } from "../components/ChartCard"
+import { PageHeader } from "../components/PageHeader"
 import { useTheme, getChartPalette } from "../lib/theme"
+import { Reveal } from "../lib/motion"
 
 export default function DailyBoard() {
   const [issue, setIssue] = useState("")
@@ -22,9 +24,9 @@ export default function DailyBoard() {
     if (items.length === 0) return null
     const top = [...items].slice(0, 12).reverse()
     const names = top.map((i) => i.name)
-    const mk = (key: string, name: string, color: string) => ({
+    const mk = (key: "view" | "favorite" | "coin" | "share" | "like", name: string, color: string) => ({
       name, type: "bar", stack: "total",
-      data: top.map((i) => (i as unknown as Record<string, number>)[key]),
+      data: top.map((i) => i[key]),
       itemStyle: { color }, emphasis: { focus: "series" },
     })
     return {
@@ -56,33 +58,40 @@ export default function DailyBoard() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">榜单 · 自建快照</div>
-          <h1>日榜（快照）</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          数据来自本地周快照（snapshots.csv）· 近似评分
-          <br />
-          score = like + 收藏×5 + 硬币×5 + 分享×2
-        </div>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb="榜单 · 自建快照"
+        title="日榜（快照）"
+        extra={
+          <>
+            数据来自本地周快照（snapshots.csv）· 近似评分
+            <br />
+            <span style={{ fontFamily: "var(--mono)" }}>score = like + 收藏×5 + 硬币×5 + 分享×2</span>
+          </>
+        }
+      />
+      </Reveal>
       {issuesQ.isLoading ? (
         <Spinner />
       ) : (
         <>
+          <Reveal>
           <ChipRow issues={issues} value={effective} onChange={setIssue} />
+          </Reveal>
           {dailyBarOpt && (
+            <Reveal delay={0.06}>
             <ChartCard
               title="当日各指标 Top 12（堆叠）"
               option={dailyBarOpt}
               filename={`daily-${effective}`}
               badge={`${rankQ.data?.items.length ?? 0} 首`}
             />
+            </Reveal>
           )}
           {rankQ.isLoading ? (
             <Spinner />
           ) : (
+            <Reveal delay={0.12}>
             <div className="card" style={{ overflowX: "auto" }}>
               <div className="card-title">
                 {effective.slice(0, 4)}-{effective.slice(4, 6)}-{effective.slice(6)} 快照
@@ -119,6 +128,7 @@ export default function DailyBoard() {
                 </tbody>
               </table>
             </div>
+            </Reveal>
           )}
         </>
       )}

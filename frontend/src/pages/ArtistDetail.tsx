@@ -7,7 +7,9 @@ import { useTheme, getChartPalette } from "../lib/theme"
 import { fmtInt, fmtWan, tierOf } from "../lib/format"
 import { ChartCard } from "../components/ChartCard"
 import { SkeletonTable } from "../components/Skeleton"
+import { PageHeader } from "../components/PageHeader"
 import type { EChartsCoreOption } from "echarts/core"
+import { Reveal } from "../lib/motion"
 
 export default function ArtistDetail() {
   const { kind, name } = useParams()
@@ -39,7 +41,7 @@ export default function ArtistDetail() {
     const top = songs.slice(0, 12).slice().reverse()
     return {
       grid: { left: 8, right: 24, top: 16, bottom: 8, containLabel: true },
-      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v: any) => fmtWan(v) },
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v: number) => fmtWan(v) },
       xAxis: { type: "value", axisLabel: { color: pal.axis, formatter: (v: number) => fmtWan(v) }, splitLine: { lineStyle: { color: pal.split } } },
       yAxis: {
         type: "category",
@@ -60,16 +62,15 @@ export default function ArtistDetail() {
 
   return (
     <div>
-      <div className="topbar">
-        <div>
-          <div className="crumb">数据 / {isVocalist ? "歌姬" : "P主"}详情</div>
-          <h1>{decoded}</h1>
-        </div>
-        <Link to={isVocalist ? "/vocalists" : "/artists"} className="chip" style={{ alignSelf: "center" }}>
-          返回{isVocalist ? "歌姬榜" : "P主榜"}
-        </Link>
-      </div>
+      <Reveal>
+      <PageHeader
+        crumb={`数据 / ${isVocalist ? "歌姬" : "P主"}详情`}
+        title={decoded}
+        extra={<Link to={isVocalist ? "/vocalists" : "/artists"} className="chip" style={{ alignSelf: "center" }}>返回{isVocalist ? "歌姬榜" : "P主榜"}</Link>}
+      />
+      </Reveal>
 
+      <Reveal delay={0.06}>
       {songsQ.isLoading ? (
         <div className="card" style={{ padding: 20 }}><SkeletonTable rows={12} /></div>
       ) : songs.length === 0 ? (
@@ -125,8 +126,8 @@ export default function ArtistDetail() {
                           {t.key && <span className={`t-badge ${t.key === "myth" ? "new" : "old"}`} style={{ marginLeft: 6 }}>{t.label}</span>}
                         </div>
                         <div className="meta">
-                          {s.producers?.map((p: any) => p.name).join("、") || "—"}
-                          {(s.vocalists?.length ?? 0) > 0 && ` · ${s.vocalists.map((v: any) => v.name).join("、")}`}
+                          {s.producers?.map((p) => p.name).join("、") || "—"}
+                          {(s.vocalists?.length ?? 0) > 0 && ` · ${s.vocalists.map((v) => v.name).join("、")}`}
                         </div>
                       </td>
                       <td className="num-r">{fmtWan(s.view)}</td>
@@ -142,6 +143,7 @@ export default function ArtistDetail() {
           </div>
         </>
       )}
+      </Reveal>
     </div>
   )
 }

@@ -4,11 +4,15 @@ import { Link } from "react-router-dom"
 import { RefreshCw, TrendingUp, Search, Flame, ArrowUpRight, Brain } from "lucide-react"
 import { api } from "../lib/api"
 import { ChipRow, Empty, Spinner, fmt, fmtDate } from "../components/ui"
+import { PageHeader } from "../components/PageHeader"
+import { Progress } from "../components/ui/progress"
+import { Magnetic } from "../components/fx/reactbits"
 import { useDebounce } from "../hooks/useDebounce"
 import { extractBv } from "../lib/bvid"
 import type { HotSong, MomentumItem } from "../lib/types"
 import { SongThinkCard } from "./HotBoard/SongThinkCard"
 import { SongAIAnalysis } from "./HotBoard/SongAIAnalysis"
+import { Reveal } from "../lib/motion"
 
 const SORTS = [
   { key: "score", label: "综合热度" },
@@ -138,24 +142,30 @@ export default function HotBoard() {
 
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">数据 · B站实时</div>
-          <h1>实时热度</h1>
-        </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <span style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-            已缓存 {st?.ok_count ?? 0} 首
-            {st?.last_fetch ? ` · 更新于 ${fmtDate(st.last_fetch)}` : ""}
-          </span>
-          <button className="chip" onClick={startRefresh} disabled={refreshing}>
-            <RefreshCw size={13} style={{ marginRight: 5, verticalAlign: -2 }} />
-            {refreshing ? "刷新中…" : "刷新数据"}
-          </button>
-        </div>
-      </div>
+      <Reveal>
+        <PageHeader
+          crumb="数据 · B站实时"
+          title="实时热度"
+          live
+          extra={
+            <span style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <span>
+                已缓存 {st?.ok_count ?? 0} 首
+                {st?.last_fetch ? ` · 更新于 ${fmtDate(st.last_fetch)}` : ""}
+              </span>
+              <Magnetic strength={0.3}>
+                <button className="chip" onClick={startRefresh} disabled={refreshing}>
+                  <RefreshCw size={13} style={{ marginRight: 5, verticalAlign: -2 }} />
+                  {refreshing ? "刷新中…" : "刷新数据"}
+                </button>
+              </Magnetic>
+            </span>
+          }
+        />
+      </Reveal>
 
       {refreshing && st && (
+        <Reveal>
         <div className="card" style={{ marginBottom: 14, padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 8 }}>
             <span style={{ color: "var(--text-faint)" }}>
@@ -165,15 +175,15 @@ export default function HotBoard() {
               成功 {st.ok} · 删除 {st.deleted} · 失败 {st.failed}
             </span>
           </div>
-          <div style={{ height: 6, background: "var(--bg-soft)", borderRadius: 99, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent)", transition: "width .3s ease" }} />
-          </div>
+          <Progress value={pct} className="mt-1 h-[6px]" />
           <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
             首次拉取全量约 1.2 万首，需 1–2 小时；本轮默认抓取各榜单最近 10 期，约几分钟完成
           </div>
         </div>
+        </Reveal>
       )}
 
+      <Reveal>
       <div className="seg" style={{ marginBottom: 14 }}>
         <button className={`seg-btn${mode === "board" ? " active" : ""}`} onClick={() => { setMode("board"); setPage(0) }}>
           <TrendingUp size={13} style={{ verticalAlign: -2, marginRight: 5 }} />
@@ -188,9 +198,11 @@ export default function HotBoard() {
           术曲思考
         </button>
       </div>
+      </Reveal>
 
       {mode === "board" ? (
         <>
+          <Reveal>
           <div className="hot-kpi">
             <div className="kpi">
               <div className="kpi-val">{summary ? fmt(summary.total) : "—"}</div>
@@ -209,7 +221,9 @@ export default function HotBoard() {
               <div className="kpi-label">神话曲</div>
             </div>
           </div>
+          </Reveal>
 
+          <Reveal delay={0.06}>
           <div className="card" style={{ marginBottom: 14 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
               <div className="hot-search">
@@ -233,7 +247,9 @@ export default function HotBoard() {
               />
             </div>
           </div>
+          </Reveal>
 
+          <Reveal delay={0.12}>
           <div className="card" style={{ marginBottom: 14 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               <span style={{ fontSize: 12, color: "var(--text-faint)", alignSelf: "center" }}>排序：</span>
@@ -250,7 +266,9 @@ export default function HotBoard() {
               综合热度 = 播放 + 收藏×15 + 硬币×30 + 点赞×3（Biliboard 周榜权重，累计口径）；「较上次」为相对最近一次快照的增量
             </div>
           </div>
+          </Reveal>
 
+          <Reveal delay={0.18}>
           <div className="card">
             {boardQ.isLoading ? (
               <Spinner />
@@ -325,17 +343,21 @@ export default function HotBoard() {
               </>
             )}
           </div>
+          </Reveal>
         </>
       ) : mode === "momentum" ? (
         <>
           {momQ.data?.has_baseline === false ? (
+            <Reveal>
             <div className="card" style={{ marginBottom: 14, padding: 16 }}>
               <div className="callout">
                 涨速榜需要<strong>至少两次刷新快照</strong>才能计算。请先在右上角「刷新数据」抓取一轮，待下一次刷新后即可看到各曲的播放增量与涨速综合分。
               </div>
             </div>
+            </Reveal>
           ) : (
             momSummary && (
+              <Reveal>
               <div className="momentum-bar">
                 <div className="mb-item">
                   <div className="mb-val up">+{fmt(momSummary.net_view)}</div>
@@ -358,9 +380,11 @@ export default function HotBoard() {
                   <div className="mb-label">追踪曲数</div>
                 </div>
               </div>
+              </Reveal>
             )
           )}
 
+          <Reveal delay={0.06}>
           <div className="card" style={{ marginBottom: 14 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               <span style={{ fontSize: 12, color: "var(--text-faint)", alignSelf: "center" }}>排序维度：</span>
@@ -377,7 +401,9 @@ export default function HotBoard() {
               涨速综合分 = 播放增量 + 收藏增量×15 + 硬币增量×30 + 点赞增量×3；数据来自最近两次快照差分，仅统计两次都收录的歌曲
             </div>
           </div>
+          </Reveal>
 
+          <Reveal delay={0.12}>
           <div className="card">
             {momQ.isLoading ? (
               <Spinner />
@@ -446,9 +472,11 @@ export default function HotBoard() {
               </>
             )}
           </div>
+          </Reveal>
         </>
       ) : (
         <>
+          <Reveal>
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="hot-search" style={{ marginBottom: 12 }}>
               <Search size={14} style={{ color: "var(--text-faint)" }} />
@@ -475,7 +503,9 @@ export default function HotBoard() {
               <div className="think-hint">未找到匹配术曲，换个关键词试试（支持中文名 / BV号 / B站链接）</div>
             ) : null}
           </div>
+          </Reveal>
 
+          <Reveal delay={0.06}>
           {thinkDetailQ.isLoading ? (
             <div className="card"><Spinner /></div>
           ) : thinkDetailQ.isError ? (
@@ -486,6 +516,7 @@ export default function HotBoard() {
               <SongAIAnalysis d={thinkDetailQ.data} />
             </>
           ) : null}
+          </Reveal>
         </>
       )}
     </>

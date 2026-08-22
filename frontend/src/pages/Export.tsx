@@ -4,33 +4,24 @@ import { Download, FileJson, FileText, Table2, RefreshCw } from "lucide-react"
 import { api } from "../lib/api"
 import { Autocomplete, type Suggestion } from "../components/Autocomplete"
 import { Empty, Spinner } from "../components/ui"
+import { PageHeader } from "../components/PageHeader"
 import {
-  exportRows,
-  fmtDate,
-  fmtTime,
-  joinNames,
   safeName,
   stamp,
-  type ExportColumn,
+  downloadBytes,
+  mimeFor,
   type ExportFormat,
 } from "../lib/csv"
+import { serializeInWorker, zipInWorker } from "../lib/exportWorker"
+import { COLS, BOARD_LABEL, type DatasetKey } from "../lib/exportSchema"
+import { AnimatedNumber, TypewriterText } from "../lib/fx"
 
 /* ------------------------------------------------------------------ *
  * 数据集注册表
  * 每个数据集声明：取数函数、列定义、文件名基名。
  * 行类型跨数据集不同，统一按 any 处理（列的 get 内部各自收敛）。
+ * 列定义统一在 exportSchema.ts 中维护。
  * ------------------------------------------------------------------ */
-
-type DatasetKey =
-  | "board"
-  | "library"
-  | "artists"
-  | "vocalists"
-  | "hot"
-  | "momentum"
-  | "monthly"
-  | "daily"
-  | "history"
 
 interface DatasetMeta {
   key: DatasetKey
@@ -50,154 +41,6 @@ const DATASETS: DatasetMeta[] = [
   { key: "history", label: "单曲全历史", desc: "指定曲目在全部榜种中的历次上榜记录（跨榜合并）" },
 ]
 
-const num = (v: unknown): number | null => (typeof v === "number" && !Number.isNaN(v) ? v : null)
-
-/* ---------------------------- 列定义 ---------------------------- */
-
-const COLS_BOARD: ExportColumn<any>[] = [
-  { key: "rank", label: "排名", get: (r) => r.rank },
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "title", label: "标题", get: (r) => r.title },
-  { key: "title_cn", label: "中文标题", get: (r) => r.title_cn ?? "" },
-  { key: "producers", label: "P主", get: (r) => joinNames(r.producers) },
-  { key: "vocalists", label: "歌姬", get: (r) => joinNames(r.vocalists) },
-  { key: "score", label: "得分", get: (r) => num(r.score) },
-  { key: "view", label: "播放", get: (r) => num(r.view) },
-  { key: "favorite", label: "收藏", get: (r) => num(r.favorite) },
-  { key: "coin", label: "硬币", get: (r) => num(r.coin) },
-  { key: "like", label: "点赞", get: (r) => num(r.like) },
-  { key: "share", label: "分享", get: (r) => num(r.share) },
-  { key: "last_rank", label: "上期排名", get: (r) => r.last_rank ?? "" },
-  { key: "peak_rank", label: "最高排名", get: (r) => r.peak_rank ?? "" },
-  { key: "weeks_on_board", label: "在榜期数", get: (r) => r.weeks_on_board ?? "" },
-  { key: "rate", label: "变化率", get: (r) => r.rate ?? "" },
-  { key: "pubtime", label: "投稿时间", get: (r) => fmtTime(r.pubtime) },
-  { key: "url", label: "视频链接", get: (r) => (r.bvid ? `https://www.bilibili.com/video/${r.bvid}` : "") },
-]
-
-const COLS_LIBRARY: ExportColumn<any>[] = [
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "title", label: "标题", get: (r) => r.title },
-  { key: "title_cn", label: "中文标题", get: (r) => r.title_cn ?? "" },
-  { key: "producers", label: "P主", get: (r) => joinNames(r.producers) },
-  { key: "vocalists", label: "歌姬", get: (r) => joinNames(r.vocalists) },
-  { key: "tier", label: "里程碑", get: (r) => ({ hall: "殿堂曲", legend: "传说曲", myth: "神话曲" } as any)[r.tier] ?? "" },
-  { key: "view", label: "播放", get: (r) => num(r.view) },
-  { key: "favorite", label: "收藏", get: (r) => num(r.favorite) },
-  { key: "coin", label: "硬币", get: (r) => num(r.coin) },
-  { key: "like", label: "点赞", get: (r) => num(r.like) },
-  { key: "share", label: "分享", get: (r) => num(r.share) },
-  { key: "peak_score", label: "最高得分", get: (r) => num(r.peak_score) },
-  { key: "best_rank", label: "最高排名", get: (r) => r.best_rank ?? "" },
-  { key: "weeks_on_board", label: "累计上榜期数", get: (r) => r.weeks_on_board ?? "" },
-  { key: "boards", label: "上榜榜种", get: (r) => (Array.isArray(r.boards) ? r.boards.join("/") : "") },
-  { key: "pubtime", label: "投稿时间", get: (r) => fmtTime(r.pubtime) },
-  { key: "first_recorded_at", label: "首次收录", get: (r) => fmtDate(r.first_recorded_at) },
-  { key: "url", label: "视频链接", get: (r) => (r.bvid ? `https://www.bilibili.com/video/${r.bvid}` : "") },
-]
-
-const COLS_ARTIST: ExportColumn<any>[] = [
-  { key: "name", label: "名字", get: (r) => r.name },
-  { key: "songs", label: "收录歌曲", get: (r) => num(r.songs) },
-  { key: "total_view", label: "总播放", get: (r) => num(r.total_view) },
-  { key: "legend", label: "传说曲", get: (r) => num(r.legend) ?? 0 },
-  { key: "myth", label: "神话曲", get: (r) => num(r.myth) ?? 0 },
-  { key: "board_count", label: "上榜期数", get: (r) => num(r.board_count) ?? 0 },
-  { key: "best_rank", label: "最高排名", get: (r) => r.best_rank ?? "" },
-  { key: "power", label: "战力分", get: (r) => num(r.power) ?? 0 },
-  { key: "best_title", label: "代表曲", get: (r) => r.best_title ?? "" },
-  { key: "best_view", label: "代表曲播放", get: (r) => num(r.best_view) },
-  { key: "best_bvid", label: "代表曲BV号", get: (r) => r.best_bvid ?? "" },
-  { key: "url", label: "百科链接", get: (r) => r.url ?? "" },
-]
-
-const COLS_HOT: ExportColumn<any>[] = [
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "title", label: "标题", get: (r) => r.title },
-  { key: "title_cn", label: "中文标题", get: (r) => r.title_cn ?? "" },
-  { key: "owner", label: "UP主", get: (r) => r.owner ?? "" },
-  { key: "score", label: "综合分", get: (r) => num(r.score) },
-  { key: "view", label: "播放", get: (r) => num(r.view) },
-  { key: "favorite", label: "收藏", get: (r) => num(r.favorite) },
-  { key: "coin", label: "硬币", get: (r) => num(r.coin) },
-  { key: "like", label: "点赞", get: (r) => num(r.like) },
-  { key: "share", label: "分享", get: (r) => num(r.share) },
-  { key: "dv", label: "播放增量", get: (r) => r.dv ?? "" },
-  { key: "df", label: "收藏增量", get: (r) => r.df ?? "" },
-  { key: "dc", label: "硬币增量", get: (r) => r.dc ?? "" },
-  { key: "dl", label: "点赞增量", get: (r) => r.dl ?? "" },
-  { key: "dscore", label: "涨速分", get: (r) => r.dscore ?? "" },
-  { key: "window_days", label: "窗口天数", get: (r) => r.window_days ?? "" },
-  { key: "pubtime", label: "投稿时间", get: (r) => fmtTime(r.pubtime) },
-  { key: "fetch_time", label: "抓取时间", get: (r) => fmtTime(r.fetch_time) },
-]
-
-const COLS_MOMENTUM: ExportColumn<any>[] = [
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "title", label: "标题", get: (r) => r.title },
-  { key: "title_cn", label: "中文标题", get: (r) => r.title_cn ?? "" },
-  { key: "owner", label: "UP主", get: (r) => r.owner ?? "" },
-  { key: "dv", label: "播放增量", get: (r) => num(r.dv) },
-  { key: "df", label: "收藏增量", get: (r) => num(r.df) },
-  { key: "dc", label: "硬币增量", get: (r) => num(r.dc) },
-  { key: "dl", label: "点赞增量", get: (r) => num(r.dl) },
-  { key: "ds", label: "分享增量", get: (r) => num(r.ds) },
-  { key: "dscore", label: "涨速综合分", get: (r) => num(r.dscore) },
-  { key: "day_view", label: "日均播放增量", get: (r) => num(r.day_view) },
-  { key: "window_days", label: "窗口天数", get: (r) => num(r.window_days) },
-  { key: "view", label: "当前播放", get: (r) => num(r.view) },
-  { key: "pubtime", label: "投稿时间", get: (r) => fmtTime(r.pubtime) },
-]
-
-const COLS_MONTHLY: ExportColumn<any>[] = [
-  { key: "rank", label: "排名", get: (r) => r.rank },
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "title", label: "标题", get: (r) => r.title },
-  { key: "sum_score", label: "累计得分", get: (r) => num(r.sum_score) },
-  { key: "weeks_on_board", label: "在榜周数", get: (r) => num(r.weeks_on_board) },
-  { key: "best_rank", label: "最高周排名", get: (r) => num(r.best_rank) },
-  { key: "url", label: "视频链接", get: (r) => (r.bvid ? `https://www.bilibili.com/video/${r.bvid}` : "") },
-]
-
-const COLS_DAILY: ExportColumn<any>[] = [
-  { key: "rank", label: "排名", get: (r) => r.rank },
-  { key: "bvid", label: "BV号", get: (r) => r.bvid },
-  { key: "name", label: "标题", get: (r) => r.name },
-  { key: "score", label: "得分", get: (r) => num(r.score) },
-  { key: "view", label: "播放", get: (r) => num(r.view) },
-  { key: "favorite", label: "收藏", get: (r) => num(r.favorite) },
-  { key: "coin", label: "硬币", get: (r) => num(r.coin) },
-  { key: "like", label: "点赞", get: (r) => num(r.like) },
-  { key: "share", label: "分享", get: (r) => num(r.share) },
-]
-
-const COLS_HISTORY: ExportColumn<any>[] = [
-  { key: "board", label: "榜种", get: (r) => r.__board },
-  { key: "issue", label: "期号", get: (r) => r.issue ?? "" },
-  { key: "issue_date", label: "统计日期", get: (r) => r.issue_date ?? "" },
-  { key: "rank", label: "排名", get: (r) => r.rank },
-  { key: "score", label: "得分", get: (r) => num(r.score) },
-  { key: "view", label: "播放", get: (r) => num(r.view) },
-  { key: "favorite", label: "收藏", get: (r) => num(r.favorite) },
-  { key: "coin", label: "硬币", get: (r) => num(r.coin) },
-  { key: "like", label: "点赞", get: (r) => num(r.like) },
-  { key: "share", label: "分享", get: (r) => num(r.share) },
-  { key: "rate", label: "变化率", get: (r) => r.rate ?? "" },
-]
-
-const COLS: Record<DatasetKey, ExportColumn<any>[]> = {
-  board: COLS_BOARD,
-  library: COLS_LIBRARY,
-  artists: COLS_ARTIST,
-  vocalists: COLS_ARTIST,
-  hot: COLS_HOT,
-  momentum: COLS_MOMENTUM,
-  monthly: COLS_MONTHLY,
-  daily: COLS_DAILY,
-  history: COLS_HISTORY,
-}
-
-const BOARD_LABEL: Record<string, string> = { weekly: "周榜", legend: "传说榜", annual: "年榜" }
 const HOT_SORTS = [
   { v: "score", label: "综合分" },
   { v: "view", label: "播放" },
@@ -228,8 +71,10 @@ export default function ExportCenter() {
 
   // ---- 各数据集参数 ----
   const [boardType, setBoardType] = useState("weekly")
-  const [issue, setIssue] = useState("")
+  // 周榜/传说榜/年榜支持多选期数批量导出（多期自动打包 zip）
+  const [boardSel, setBoardSel] = useState<string[]>([])
   const [topN, setTopN] = useState(100)
+  const [exporting, setExporting] = useState(false)
 
   const [libQ, setLibQ] = useState("")
   const [libProducer, setLibProducer] = useState("")
@@ -269,11 +114,13 @@ export default function ExportCenter() {
     enabled: ds === "daily",
   })
 
+  const boardIssues = issues?.data?.issues ?? []
+  const firstIssue = boardSel[0]
+
   // 榜种切换后默认选最新一期
   useEffect(() => {
-    const list = issues.data?.issues
-    if (list?.length && !list.some((i) => i.issue === issue)) setIssue(list[0]!.issue)
-  }, [issues.data, issue])
+    if (boardIssues.length && boardSel.length === 0) setBoardSel([boardIssues[0]!.issue])
+  }, [boardIssues, boardSel.length])
   useEffect(() => {
     const list = monthIssues.data?.issues
     if (list?.length && !monthIssue) setMonthIssue(list[0]!.issue)
@@ -289,7 +136,7 @@ export default function ExportCenter() {
       "exp-data",
       ds,
       boardType,
-      issue,
+      firstIssue,
       topN,
       libQ,
       libProducer,
@@ -307,12 +154,12 @@ export default function ExportCenter() {
       dailyIssue,
       histBvid,
     ],
-    [ds, boardType, issue, topN, libQ, libProducer, libVocalist, libTier, libBoard, libSort,
+    [ds, boardType, firstIssue, topN, libQ, libProducer, libVocalist, libTier, libBoard, libSort,
       libLimit, artLimit, hotSort, hotLimit, momMetric, momLimit, monthIssue, dailyIssue, histBvid],
   )
 
   const ready =
-    (ds === "board" && !!issue) ||
+    (ds === "board" && !!firstIssue) ||
     ds === "library" ||
     ds === "artists" ||
     ds === "vocalists" ||
@@ -328,7 +175,7 @@ export default function ExportCenter() {
     queryFn: async (): Promise<any[]> => {
       switch (ds) {
         case "board":
-          return (await api.rankings(boardType, issue, topN)).items
+          return (await api.rankings(boardType, firstIssue ?? "", topN)).items
         case "library":
           return (
             await api.searchSongs({
@@ -356,7 +203,7 @@ export default function ExportCenter() {
           return (await api.dailyRankings(dailyIssue, topN)).items
         case "history": {
           const r = await api.allHistory(histBvid)
-          const rows: any[] = []
+          const rows: unknown[] = []
           for (const [board, list] of Object.entries(r.histories)) {
             for (const it of list) rows.push({ ...it, __board: BOARD_LABEL[board] ?? board })
           }
@@ -391,7 +238,9 @@ export default function ExportCenter() {
     const t = stamp()
     switch (ds) {
       case "board":
-        return safeName(`术力口_${BOARD_LABEL[boardType] ?? boardType}_${issue}_top${topN}_${t}`)
+        if (boardSel.length > 1)
+          return safeName(`术力口_${BOARD_LABEL[boardType] ?? boardType}_${boardSel.length}期_top${topN}_${t}`)
+        return safeName(`术力口_${BOARD_LABEL[boardType] ?? boardType}_${firstIssue}_top${topN}_${t}`)
       case "library":
         return safeName(`术力口_曲库_${libQ || libProducer || libVocalist || "全部"}_${rows.length}条_${t}`)
       case "artists":
@@ -409,33 +258,82 @@ export default function ExportCenter() {
       case "history":
         return safeName(`术力口_历史_${histTitle || histBvid}_${t}`)
     }
-  }, [ds, boardType, issue, topN, libQ, libProducer, libVocalist, artLimit, hotSort, hotLimit,
+  }, [ds, boardType, firstIssue, boardSel.length, topN, libQ, libProducer, libVocalist, artLimit, hotSort, hotLimit,
     momMetric, momLimit, monthIssue, dailyIssue, histBvid, histTitle, rows.length])
 
   const [log, setLog] = useState<{ name: string; rows: number; at: string }[]>([])
 
   function doExport() {
+    // 周榜/传说榜/年榜多选期数：逐期取数，后台线程打包成 zip 下载
+    if (ds === "board" && boardSel.length > 1) {
+      setExporting(true)
+      void (async () => {
+        const t = stamp()
+        const label = BOARD_LABEL[boardType] ?? boardType
+        try {
+          const entries: { name: string; data: Uint8Array }[] = []
+          let totalRows = 0
+          for (const iss of boardSel) {
+            const r = await api.rankings(boardType, iss, topN)
+            totalRows += r.items.length
+            const data = await serializeInWorker("board", r.items, fmt)
+            entries.push({
+              name: safeName(`术力口_${label}_${iss}_top${topN}.${fmt}`),
+              data,
+            })
+          }
+          const zipName = safeName(`术力口_${label}_${boardSel.length}期_top${topN}_${t}.zip`)
+          const bytes = await zipInWorker(entries)
+          downloadBytes(zipName, bytes, "application/zip")
+          setLog((l) =>
+            [
+              { name: zipName, rows: totalRows, at: new Date().toLocaleTimeString("zh-CN") },
+              ...l,
+            ].slice(0, 8),
+          )
+        } catch (e) {
+          alert(`批量导出失败：${e instanceof Error ? e.message : String(e)}`)
+        } finally {
+          setExporting(false)
+        }
+      })()
+      return
+    }
+
     if (!rows.length) return
-    exportRows(basename, rows, cols, fmt)
-    setLog((l) =>
-      [{ name: `${basename}.${fmt}`, rows: rows.length, at: new Date().toLocaleTimeString("zh-CN") }, ...l].slice(0, 8),
-    )
+    setExporting(true)
+    void (async () => {
+      try {
+        const bytes = await serializeInWorker(ds, rows, fmt)
+        downloadBytes(`${basename}.${fmt}`, bytes, mimeFor(fmt))
+        setLog((l) =>
+          [{ name: `${basename}.${fmt}`, rows: rows.length, at: new Date().toLocaleTimeString("zh-CN") }, ...l].slice(0, 8),
+        )
+      } catch (e) {
+        alert(`导出失败：${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        setExporting(false)
+      }
+    })()
   }
 
   const meta = DATASETS.find((d) => d.key === ds)!
   const preview = rows.slice(0, 8)
 
+  function toggleBoardSel(iss: string) {
+    setBoardSel((s) => (s.includes(iss) ? s.filter((x) => x !== iss) : [...s, iss]))
+  }
+  function setAllBoardSel() {
+    setBoardSel(boardIssues.map((i) => i.issue))
+  }
+
   return (
     <>
-      <div className="topbar">
-        <div>
-          <div className="crumb">工具 · 数据导出</div>
-          <h1>数据导出中心</h1>
-        </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
-          9 类数据集 · CSV / JSON / Markdown · 字段可裁剪
-        </div>
-      </div>
+      <PageHeader
+        crumb="工具 · 数据导出"
+        title={<TypewriterText text="数据导出中心" />}
+        extra="9 类数据集 · CSV / JSON / Markdown · 字段可裁剪"
+      />
 
       <div className="card">
         <div className="card-title">1 · 选择数据集</div>
@@ -466,16 +364,30 @@ export default function ExportCenter() {
                   <option value="annual">年榜</option>
                 </select>
               </label>
-              <label className="field">
-                期数
-                <select value={issue} onChange={(e) => setIssue(e.target.value)} style={{ minWidth: 190 }}>
-                  {(issues.data?.issues ?? []).map((i) => (
-                    <option key={i.issue} value={i.issue}>
-                      {i.issue} · {i.date}（{i.entries} 条）
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="field">
+                <span className="ms-head">
+                  <span>期数（可多选）</span>
+                  <span className="ms-acts">
+                    <button type="button" className="ms-act" onClick={setAllBoardSel}>全选</button>
+                    <button type="button" className="ms-act" onClick={() => setBoardSel([])}>清空</button>
+                  </span>
+                </span>
+                <div className="ms-box">
+                  {boardIssues.map((i) => {
+                    const on = boardSel.includes(i.issue)
+                    return (
+                      <label key={i.issue} className={"ms-item" + (on ? " on" : "")}>
+                        <input type="checkbox" checked={on} onChange={() => toggleBoardSel(i.issue)} />
+                        <span className="ms-name">{i.issue} · {i.date}</span>
+                        <span className="ms-count">{i.entries} 条</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                {boardSel.length > 1 && (
+                  <span className="ms-hint">已选 {boardSel.length} 期，导出时自动打包为 zip</span>
+                )}
+              </div>
               <label className="field">
                 取前 N 名
                 <input
@@ -697,7 +609,7 @@ export default function ExportCenter() {
       <div className="card">
         <div className="card-title">
           4 · 预览与导出
-          {ready && !dataQ.isLoading && <span className="badge">{rows.length.toLocaleString()} 行</span>}
+          {ready && !dataQ.isLoading && <span className="badge"><AnimatedNumber value={rows.length} /> 行</span>}
         </div>
 
         <div className="lib-filters" style={{ alignItems: "center" }}>
@@ -714,10 +626,17 @@ export default function ExportCenter() {
           </div>
           <span className="spacer" style={{ flex: 1 }} />
           <span style={{ fontSize: 11.5, color: "var(--text-faint)", fontFamily: "var(--mono)" }}>
-            {basename}.{fmt}
+            {ds === "board" && boardSel.length > 1 ? `${basename}.zip` : `${basename}.${fmt}`}
           </span>
-          <button className="chip primary" onClick={doExport} disabled={!rows.length}>
-            <Download size={12} /> 导出 {rows.length ? `${rows.length.toLocaleString()} 行` : ""}
+          <button className="chip primary" onClick={doExport} disabled={exporting || !rows.length}>
+            {exporting ? <RefreshCw size={12} className="spin" /> : <Download size={12} />}{" "}
+            {exporting
+              ? "打包中…"
+              : ds === "board" && boardSel.length > 1
+                ? `导出 ${boardSel.length} 期 zip`
+                : rows.length
+                  ? <>导出 <AnimatedNumber value={rows.length} /> 行</>
+                  : "导出"}
           </button>
         </div>
 
@@ -784,7 +703,7 @@ export default function ExportCenter() {
               {log.map((l, i) => (
                 <tr key={i}>
                   <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{l.name}</td>
-                  <td className="num-r">{l.rows.toLocaleString()}</td>
+                  <td className="num-r"><AnimatedNumber value={l.rows} /></td>
                   <td className="num-r">{l.at}</td>
                 </tr>
               ))}
