@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { Canvas } from "@react-three/fiber"
 import { Bot, Send, Wrench, Loader2, AlertTriangle, Check, MessageSquarePlus, Trash2, Pencil, Pin, PinOff, Search, FileText, Plus, X, Copy, Zap, FoldHorizontal, ListTodo } from "lucide-react"
 import { api } from "../lib/api"
+import { BASE } from "../lib/apis/request"
 import EmotionBall from "../airi/components/EmotionBall"
 import { useFavorites } from "../lib/favorites"
 import { useConversations } from "../lib/conversations"
@@ -14,8 +15,6 @@ import { Markdown } from "../lib/markdown"
 import { ChartCard } from "./Agent/ChartCard"
 import { TypewriterText } from "../lib/fx"
 import { StaggerGroup, StaggerItem } from "../lib/motion"
-
-const BASE = import.meta.env.VITE_API_BASE ?? ""
 
 function prettyArgs(raw: string): string {
   try {

@@ -1,6 +1,6 @@
 # huamei术力口 — VOCALOID 周榜实时追踪
 
-> V0.2.0.1 RC 1 | CC BY-NC 4.0
+> V0.2.0.1 RC 2 | CC BY-NC 4.0
 
 实时追踪 B 站 VOCALOID 每周排行榜、传说曲、神话曲数据，提供多维度榜单、数据分析与 AI 智能体。
 
@@ -18,9 +18,20 @@
 - **液态玻璃视觉** — Liquid Glass 界面 + WebGPU 粒子背景 + 全局动效
 - **主题切换** — 浅色 / 深色一键切换，移动端响应式
 
-## 本轮更新（V0.2.0.1 RC 1）
+## 本轮更新（V0.2.0.1 RC 2）
 
-### 液态玻璃与新一代视觉系统
+候选发布版第二轮迭代：全面 BUG 修复 + 桌面集成加固。
+
+- 修复 Electron 桌面态 IPC 无响应可能造成首屏白屏的问题（渲染兜底超时）
+- 修复 `app://` 协议目录穿越护栏前缀误判、打包配置硬编码绝对路径（无法在其它机器重新打包）
+- favicon 等引用对齐相对路径；前后端/桌面版本统一为 V0.2.0.1 RC 2
+- 全面回归：`tsc` / build / vitest / pytest 全绿，20+ 页面浏览器实测零 console 错误
+
+详细变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
+
+### V0.2.0.1 RC 1 更新内容
+
+#### 液态玻璃与新一代视觉系统
 - **液态玻璃（Liquid Glass）** — 卡片 / 面板毛玻璃 + 流动折射高光，尊重 `prefers-reduced-motion`
 - **WebGPU 粒子背景** — WaveTerrain 波动地形 + 粒子星云，GPU compute shader 渲染，自动回退 Canvas2D
 - 全局动效层：滚动进度条 / 卡片聚光灯 / 数字滚动 / 打字机 / 文字流光 / 3D 倾斜 / 点击涟漪 / 排名徽标（借鉴 React Bits / Magic UI / Aceternity 自研适配）

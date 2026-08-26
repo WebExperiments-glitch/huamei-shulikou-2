@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // 用相对路径打包资源：Electron 桌面版通过 file:// 加载（loadFile），
+  // 绝对 /assets 会解析到磁盘根导致白屏；base './' 使 file:// 也能正确加载。
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     // 强制 three 单实例：@react-three/drei 的 stats-gl 嵌套了 three@0.170.0，

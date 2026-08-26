@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Play, Square, RefreshCw, ChevronDown, ChevronRight, XCircle, Loader2, CheckCircle2, ListTodo } from "lucide-react"
-
-const BASE = import.meta.env.VITE_API_BASE ?? ""
+import { BASE } from "../lib/apis/request"
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, init)

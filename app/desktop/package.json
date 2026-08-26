@@ -1,0 +1,55 @@
+{
+  "name": "huamei-shulikou-desktop",
+  "version": "0.2.1-rc.2",
+  "private": true,
+  "description": "huamei术力口 — 桌面应用（Electron 壳 + React 前端 + Python 内核）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.huamei.shulikou",
+    "productName": "huamei术力口",
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "directories": {
+      "output": "build_out"
+    },
+    "extraResources": [
+      {
+        "from": "../../backend/dist_backend/huamei_backend.exe",
+        "to": "backend/huamei_backend.exe"
+      },
+      {
+        "from": "../../backend/dist_backend/data/biliboard.db",
+        "to": "backend/data/biliboard.db"
+      },
+      {
+        "from": "../../backend/.playwright-browsers",
+        "to": "backend/.playwright-browsers"
+      },
+      {
+        "from": "../../frontend/dist",
+        "to": "frontend"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "huamei术力口"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}

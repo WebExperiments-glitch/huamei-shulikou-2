@@ -1,4 +1,4 @@
-﻿# ===== 依赖 =====
+# ===== 依赖 =====
 node_modules/
 __pycache__/
 *.pyc
@@ -79,6 +79,17 @@ download_airi.ps1
 # ===== 打包/下载遗留 =====
 *.zip
 start_all.bat
+
+# ===== Electron 桌面版构建产物（体积巨大，不入库；从 cloud 分发随 Release 下载）=====
+app/desktop/node_modules/
+app/desktop/build_out/
+app/desktop/release/
+app/desktop/build/
+
+# ===== 后端打包产物 / 内置浏览器（体积巨大，不入库；随桌面 Release 分发）=====
+backend/dist_backend/
+backend/build_backend/
+backend/.playwright-browsers/
 
 # ===== 已弃用：netease_encode_api（AGPLv3，与本项目 CC BY-NC 4.0 不兼容）=====
 # 本地备份保留在磁盘，但不进入开源版本库；其搜索/详情/评论功能已由

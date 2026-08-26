@@ -1,5 +1,23 @@
 # 更新日志
 
+## V0.2.0.1 RC 2 — 2026-08-26（全面 BUG 修复 + 桌面集成加固）
+
+候选发布版第二轮迭代。在 RC 1 基础上对前后端与 Electron 桌面壳做了全面排查（编译 / 单测 / 构建 / 集成冒烟 / 20+ 页面浏览器实测），修复以下问题：
+
+### BUG 修复
+- **【桌面】修复首屏白屏风险**：渲染进程 `initApiBase` 依赖 IPC（`getBackendPort`）取后端端口，主进程异常时该 promise 可能永不返回，导致应用永远卡在首帧之前。现加入 3s 超时兜底：超时 / 失败自动保持默认相对路径并继续渲染（[request.ts](frontend/src/lib/apis/request.ts)）
+- **【桌面】修复 `app://` 协议目录穿越护栏被前缀误判**：原 `startsWith(root)` 会把 `frontend2` 等前缀含 root 的目录误判为合法路径，现精确到「root + 路径分隔符」（[main.js](app/desktop/main.js)）
+- **【桌面】修复打包配置硬编码绝对路径**：`extraResources` 的 `from` 原指向本机 `D:/...` 绝对路径，换机器无法复现打包；统一改为相对路径（[desktop/package.json](app/desktop/package.json)）
+- **【前端】favicon 引用改为相对路径**：与 `base: './'` 对齐，兼容子路径部署与 `file://` 上下文（[index.html](frontend/index.html)）
+- **【版本】统一版本号**：前端 / 后端 / 桌面壳 / lock 文件全部对齐为 V0.2.0.1 RC 2（桌面包 0.2.1-rc.2）
+
+### 全面回归结论
+- `tsc -b` 零错误、`npm run build` 通过、前端 26 项 vitest、后端 36 项 pytest 全绿
+- 浏览器实测 20+ 路由页面：0 console error / warning，全部 API 与静态资源 200（含首次渲染的 favicon / 字体 / WebGPU 粒子 / Airi 3D 懒加载）
+- 后端 `/api/health`、`/api/system/*`、榜单 / 热度 / 预测 / 网易云等关键端点冒烟通过
+
+---
+
 ## V0.2.0.1 RC 1 — 2026-08-22（新一代界面 + 液态玻璃 + AI 伴侣 + 架构重构）
 
 自 V0.13 lite 起重写前端视觉与新架构，正式定名 **V0.2.0.1 RC 1**（候选发布版）。对比上一版新增大量模块，视觉、动效、AI 能力与工程稳定性全面升级。

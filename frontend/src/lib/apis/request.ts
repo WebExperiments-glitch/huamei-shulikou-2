@@ -10,7 +10,45 @@
  */
 import type { Producer, RankEntry, RankRaw, Vocalist } from "../types"
 
-export const BASE = import.meta.env.VITE_API_BASE ?? ""
+// 请求基础地址。默认空串：走 vite proxy 的相对 /api 前缀（浏览器开发模式）。
+// Electron 桌面态下，经 initApiBase() 在启动早期改为直连本地后端的 http://127.0.0.1:<port>，
+// 因此用可变活绑定而非 const，供全站统一引用（含各模块 import 的 BASE）。
+export let BASE = import.meta.env.VITE_API_BASE ?? ""
+
+/** 设置请求基础地址（供 initApiBase 在运行时更新）。 */
+export function setApiBase(base: string): void {
+  BASE = base
+}
+
+/**
+ * 初始化 API 基础地址，须在应用渲染前调用一次。
+ * - 显式配置了 VITE_API_BASE 时保持不变（浏览器/自定义部署优先）；
+ * - Electron 桌面态（window.desktop）下直连后端子进程实际端口，去掉对 vite proxy 的依赖。
+ *
+ * 注意：IPC（getBackendPort）无响应时必须兜底放行，否则主进程异常时
+ * 渲染进程将永远停留在 initApiBase → 首屏白屏。超时/失败保持默认相对路径。
+ */
+export async function initApiBase(timeoutMs = 3000): Promise<void> {
+  if (import.meta.env.VITE_API_BASE) return
+  const w = window as unknown as {
+    desktop?: { isDesktop?: boolean; getBackendPort?: () => Promise<number> }
+  }
+  if (w.desktop?.isDesktop && typeof w.desktop.getBackendPort === "function") {
+    const port = await new Promise<number>((resolve) => {
+      const timer = setTimeout(() => resolve(0), timeoutMs)
+      w.desktop!.getBackendPort!()
+        .then((p) => {
+          clearTimeout(timer)
+          resolve(typeof p === "number" && Number.isFinite(p) ? p : 0)
+        })
+        .catch(() => {
+          clearTimeout(timer)
+          resolve(0)
+        })
+    })
+    if (port > 0) setApiBase(`http://127.0.0.1:${port}`)
+  }
+}
 
 const DEBUG = import.meta.env.DEV
 

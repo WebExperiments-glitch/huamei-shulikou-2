@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "huamei-shulikou-backend"
-version = "0.2.0.1-rc1"
+version = "0.2.0.1-rc2"
 description = "huamei术力口后端 —— VOCALOID 周榜数据服务"
 requires-python = ">=3.13"
 license = { text = "CC BY-NC 4.0" }

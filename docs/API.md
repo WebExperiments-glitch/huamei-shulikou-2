@@ -1,6 +1,6 @@
 # 术力口周榜 — API 接口文档
 
-> 版本：V0.2.0.1 RC 1
+> 版本：V0.2.0.1 RC 2
 >
 > 基础地址：`http://127.0.0.1:8010`（开发环境，直连后端）
 >
@@ -35,7 +35,7 @@
 返回服务状态。
 
 ```json
-{ "status": "ok", "version": "V0.2.0.1 RC 1", "app": "huamei术力口", "docs": "/docs" }
+{ "status": "ok", "version": "V0.2.0.1 RC 2", "app": "huamei术力口", "docs": "/docs" }
 ```
 
 ---

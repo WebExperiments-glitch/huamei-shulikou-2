@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { ThumbsUp, ThumbsDown, X, Send } from "lucide-react"
 import type { Feedback } from "../lib/conversations"
-
-const BASE = import.meta.env.VITE_API_BASE ?? ""
+import { BASE } from "../lib/apis/request"
 
 function getClientId(): string {
   try {
