@@ -147,7 +147,10 @@ enum Scene3DBuilder {
             torus.materials = [mat]
 
             let node = SCNNode(geometry: torus)
-            node.eulerAngles = SCNVector3(Float.pi / 2 + Double(i) * 0.28, Double(i) * 0.6, 0)
+            // 拆开表达式，显式 Float 类型，避免编译器类型检查超时
+            let tilt = Float.pi / 2 + Float(i) * 0.28
+            let yaw = Float(i) * 0.6
+            node.eulerAngles = SCNVector3(tilt, yaw, 0)
             let duration = mode == .performance ? 13.0 + Double(i) * 4 : 8.0 + Double(i) * 3
             let spin = SCNAction.rotateBy(x: 0, y: 2 * .pi, z: 0, duration: duration)
             node.runAction(.repeatForever(spin))

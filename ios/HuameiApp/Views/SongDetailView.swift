@@ -153,10 +153,25 @@ struct SongDetailView: View {
         .frame(height: 180)
     }
 
+    private var boardTypes: [String] {
+        var seen = Set<String>()
+        let raw = history.compactMap(\.boardType).filter { seen.insert($0).inserted }
+        return raw.map { label(for: $0) }
+    }
+
+    private func label(for board: String) -> String {
+        switch board {
+        case "weekly": return "周榜"
+        case "legend": return "传说曲"
+        case "annual": return "年榜"
+        default: return board
+        }
+    }
+
     private var legendRow: some View {
         HStack(spacing: 14) {
-            ForEach(history.map(\.boardType).removingDuplicates()) { type in
-                Text(SongHistoryEntry(boardType: type, issue: nil, rank: nil, score: nil, view: nil, favorite: nil, coin: nil, like: nil).boardLabel)
+            ForEach(boardTypes, id: \.self) { label in
+                Text(label)
                     .font(.caption)
                     .foregroundStyle(.textTertiary)
             }
@@ -194,12 +209,5 @@ struct SongDetailView: View {
             score: nil,
             pubtime: d.pubtime
         )
-    }
-}
-
-extension Array where Element: Hashable {
-    func removingDuplicates() -> [Element] {
-        var seen = Set<Element>()
-        return filter { seen.insert($0).inserted }
     }
 }
