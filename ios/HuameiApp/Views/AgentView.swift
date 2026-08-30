@@ -151,7 +151,7 @@ struct AgentTurn: Codable {
     let content: String
 }
 
-struct AgentMessage: Identifiable, Equatable {
+struct AgentMessage: Identifiable {
     let id = UUID()
     var role: AgentRole
     var content: String
