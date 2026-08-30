@@ -1,0 +1,17 @@
+{
+  "project": "Huamei",
+  "platform": "ios",
+  "github": {
+    "owner": "WebExperiments-glitch",
+    "repo": "huamei-shulikou-2"
+  },
+  "ios": {
+    "path": "ios",
+    "scheme": "Huamei",
+    "signing": false
+  },
+  "mobai": {
+    "url": "http://localhost:8686",
+    "device_id": ""
+  }
+}
