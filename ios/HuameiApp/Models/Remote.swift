@@ -312,7 +312,8 @@ struct NeteaseSong: Decodable, Identifiable, Sendable, Hashable {
         artists = try c.decodeIfPresent(String.self, forKey: .artists)
         album = try c.decodeIfPresent(String.self, forKey: .album)
         pic = try c.decodeIfPresent(String.self, forKey: .pic)
-        duration = try c.decodeIfPresent(Int.self, forKey: .duration) ?? try c.decodeIfPresent(Int.self, forKey: .durationMs)
+        let durationPart = try c.decodeIfPresent(Int.self, forKey: .duration)
+        duration = durationPart ?? (try? c.decodeIfPresent(Int.self, forKey: .durationMs)) ?? nil
     }
 }
 

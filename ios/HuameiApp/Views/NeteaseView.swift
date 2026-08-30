@@ -134,8 +134,9 @@ final class NeteasePlayer {
     private func setupObserver(_ item: AVPlayerItem) {
         let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self else { return }
-            self.currentTime = time.seconds
+            Task { @MainActor [weak self] in
+                self?.currentTime = time.seconds
+            }
         }
         Task { @MainActor in
             let d = try? await item.asset.load(.duration)
@@ -224,7 +225,7 @@ struct PlayerBar: View {
 
 enum LyricsParser {
     static func parse(_ raw: String) -> [(time: Double, text: String)] {
-        var out: [(Double, String)] = []
+        var out: [(time: Double, text: String)] = []
         let pattern = #"\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]"#
         for line in raw.split(separator: "\n") {
             let str = String(line)
@@ -232,11 +233,11 @@ enum LyricsParser {
             let times = str.matches(pattern)
             let text = String(str[range.upperBound...]).trimmingCharacters(in: .whitespaces)
             for t in times {
-                let sec = t.0 * 60 + t.1 + t.2
+                let sec = Double(t.0) * 60 + t.1 + t.2
                 out.append((sec, text.isEmpty ? "♪" : text))
             }
         }
-        return out.sorted { $0.time < $1.time }
+        return out.sorted { lhs, rhs in lhs.time < rhs.time }
     }
 }
 

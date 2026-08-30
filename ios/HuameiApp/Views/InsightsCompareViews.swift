@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 // MARK: - 数据分析 / 洞察中心
 
