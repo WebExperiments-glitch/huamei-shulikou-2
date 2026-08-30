@@ -51,9 +51,8 @@ struct BoardIssue: Codable, Identifiable, Sendable, Hashable {
     var displayDate: String {
         guard issue.count == 8 else { return issue }
         let m = Int(issue.prefix(4)) ?? 0
-        let dd = Int(issue.dropFirst(4).prefix(2)) ?? 0
-        let d = Int(issue.suffix(2)) ?? 0
-        return "\(m)月\(d)日"
+        let day = Int(issue.suffix(2)) ?? 0
+        return "\(m)月\(day)日"
     }
 }
 

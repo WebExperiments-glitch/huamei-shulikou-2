@@ -87,7 +87,7 @@ struct SettingsView: View {
         }
         do {
             let health: HealthResponse = try await APIClient.shared.get("api/health", baseURL: base)
-            checkResult = "连接成功：\(health.status)，版本 \(health.version)"
+            checkResult = "连接成功：\(health.status)，版本 \(health.version ?? "?")"
             Haptics.success()
         } catch {
             checkResult = "连接失败：\(error.localizedDescription)"

@@ -45,7 +45,7 @@ struct RootTabView: View {
             .navigationTitle("术力口")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } detail: {
-            switch selection {
+            switch selection ?? .boards {
             case .boards: NavigationStack { BoardsView() }
             case .favorites: NavigationStack { FavoritesView() }
             case .settings: NavigationStack { SettingsView() }
@@ -54,7 +54,7 @@ struct RootTabView: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    @State private var selection: SplitSection = .boards
+    @State private var selection: SplitSection? = .boards
 }
 
 private enum SplitSection: String, CaseIterable, Identifiable, Hashable {
