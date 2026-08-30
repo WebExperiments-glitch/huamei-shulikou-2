@@ -156,7 +156,7 @@ struct AgentMessage: Identifiable {
     var role: AgentRole
     var content: String
     var reasoning: String?
-    var tools: [AgentTool]
+    var tools: [AgentTool] = []
     enum AgentRole: String { case user, assistant }
     var isUser: Bool { role == .user }
 }
