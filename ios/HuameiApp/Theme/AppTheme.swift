@@ -49,10 +49,14 @@ extension Color {
 
 extension ShapeStyle where Self == Color {
     static var brandPrimary: Color { Color.brandPrimary }
+    static var appBackground: Color { Color.appBackground }
+    static var cardSurface: Color { Color.cardSurface }
+    static var elevatedSurface: Color { Color.elevatedSurface }
     static var textTertiary: Color { Color.textTertiary }
     static var successGreen: Color { Color.successGreen }
     static var warningAmber: Color { Color.warningAmber }
     static var errorRed: Color { Color.errorRed }
+    static var metricAccent: Color { Color.metricAccent }
 }
 
 // MARK: - 全局外观（导航栏/列表背景走系统材质，滚动边缘软过渡）

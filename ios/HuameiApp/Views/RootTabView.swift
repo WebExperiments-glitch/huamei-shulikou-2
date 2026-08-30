@@ -36,8 +36,11 @@ struct RootTabView: View {
     /// iPad：侧边栏 + 内容三区
     private func iPadRoot() -> some View {
         NavigationSplitView {
-            List(SplitSection.allCases, selection: $selection) { item in
-                Label(item.title, systemImage: item.image).tag(item)
+            List(selection: $selection) {
+                ForEach(SplitSection.allCases) { item in
+                    Label(item.title, systemImage: item.image)
+                        .tag(item)
+                }
             }
             .navigationTitle("术力口")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
