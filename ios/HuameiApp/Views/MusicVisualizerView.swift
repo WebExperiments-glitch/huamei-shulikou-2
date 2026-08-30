@@ -50,8 +50,16 @@ struct MusicVisualizerView: View {
             .background(.ultraThinMaterial)
         }
         .task { await begin() }
+        .onChange(of: player.isPlaying) { _, playing in
+            AudioVisualFeedback.shared.playing = playing
+        }
+        .onChange(of: player.currentTime) { _, _ in
+            AudioVisualFeedback.shared.tick()
+        }
         .onDisappear {
             player.clear()
+            AudioVisualFeedback.shared.playing = false
+            AudioVisualFeedback.shared.energy = 0
         }
     }
 
