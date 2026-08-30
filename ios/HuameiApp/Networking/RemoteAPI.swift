@@ -61,8 +61,11 @@ enum RemoteAPI {
         do {
             struct Box: Decodable { let items: [StatsPerson]?; let artists: [StatsPerson]?; let vocalists: [StatsPerson]? }
             let box = try await APIClient.shared.get("api/stats/\(role)", baseURL: base)
-            if role == "vocalists" { return box.vocalists ?? box.items ?? [] }
-            return box.artists ?? box.items ?? []
+            let raw: [StatsPerson] = role == "vocalists"
+                ? (box.vocalists ?? box.items ?? [])
+                : (box.artists ?? box.items ?? [])
+            // 榜单可能返回数千条，渲染长列表会卡；只取最有价值的前 300
+            return Array(raw.prefix(300))
         } catch {
             print("[RemoteAPI] stats 失败: \(error)")
             return []
