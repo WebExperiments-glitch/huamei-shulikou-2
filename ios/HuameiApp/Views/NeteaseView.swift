@@ -9,7 +9,6 @@ struct NeteaseView: View {
     @State private var results: [NeteaseSong] = []
     @State private var query = ""
     @State private var searched = false
-    @State private var player = NeteasePlayer()
 
     var body: some View {
         List {
@@ -19,13 +18,11 @@ struct NeteaseView: View {
                 ContentUnavailableView(
                     "搜索网易云歌曲",
                     systemImage: "music.note",
-                    description: Text(searched ? "没有找到相关歌曲" : "输入歌名开始搜索，搜索结果可点击播放")
+                    description: Text(searched ? "没有找到相关歌曲" : "输入歌名开始搜索，点击歌曲进入 3D 可视化听音")
                 )
             } else {
                 ForEach(results) { song in
-                    Button {
-                        player.play(song, settings: settings)
-                    } label: {
+                    NavigationLink(value: song) {
                         HStack(spacing: 12) {
                             AsyncImage(url: URL(string: song.pic ?? "")) { img in
                                 img.resizable().scaledToFill()
@@ -38,7 +35,6 @@ struct NeteaseView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(song.name ?? "")
                                     .font(.body.weight(.medium))
-                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 Text([song.artists, song.album].compactMap { $0 }.joined(separator: " · "))
                                     .font(.caption)
@@ -46,10 +42,9 @@ struct NeteaseView: View {
                                     .lineLimit(1)
                             }
                             Spacer()
-                            if player.currentSongID == song.idString {
-                                Image(systemName: player.isPlaying ? "waveform" : "play.fill")
-                                    .foregroundStyle(Color.brandPrimary)
-                            }
+                            Image(systemName: "cube.transparent")
+                                .font(.caption)
+                                .foregroundStyle(.textTertiary)
                         }
                         .padding(.vertical, 3)
                     }
@@ -58,10 +53,8 @@ struct NeteaseView: View {
         }
         .navigationTitle("网易云")
         .searchable(text: $query, prompt: "歌名 / 歌手 / 专辑")
-        .safeAreaInset(edge: .bottom) {
-            if player.currentSong != nil {
-                PlayerBar(player: player)
-            }
+        .navigationDestination(for: NeteaseSong.self) { song in
+            MusicVisualizerView(song: song)
         }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -126,6 +119,17 @@ final class NeteasePlayer {
         player?.seek(to: CMTime(seconds: time, preferredTimescale: 1000))
     }
 
+    /// 停止并释放播放器（离开页面时调用）
+    func clear() {
+        stopObserver()
+        player?.pause()
+        player = nil
+        isPlaying = false
+        currentTime = 0
+        duration = 0
+        lyric = []
+    }
+
     private func loadLyric(songID: String, settings: SettingsStore) async {
         let raw = await RemoteAPI.neteaseLyric(songID: songID, settings: settings) ?? ""
         lyric = LyricsParser.parse(raw)
@@ -149,75 +153,6 @@ final class NeteasePlayer {
             player.removeTimeObserver(timeObserver)
         }
         timeObserver = nil
-    }
-}
-
-// MARK: - 播放条
-
-struct PlayerBar: View {
-    @Bindable var player: NeteasePlayer
-
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 12) {
-                Button {
-                    player.toggle()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(Color.brandPrimary)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(player.currentSong?.name ?? "")
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                    Text(player.currentSong?.artists ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.textTertiary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-            if !player.lyric.isEmpty {
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical) {
-                        VStack(spacing: 4) {
-                            ForEach(Array(player.lyric.enumerated()), id: \.offset) { idx, line in
-                                Text(line.text)
-                                    .font(.caption)
-                                    .foregroundStyle(isCurrent(idx) ? Color.brandPrimary : Color.textTertiary)
-                                    .fontWeight(isCurrent(idx) ? .semibold : .regular)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .id(idx)
-                            }
-                        }
-                    }
-                    .frame(height: 110)
-                    .onChange(of: player.currentTime) { _, _ in
-                        if let i = player.lyric.lastIndex(where: { $0.time <= player.currentTime }) {
-                            withAnimation { proxy.scrollTo(i, anchor: .center) }
-                        }
-                    }
-                }
-            }
-            Slider(value: Binding(
-                get: { player.currentTime },
-                set: { player.seek(to: $0) }
-            ), in: 0...max(player.duration, 1))
-            .tint(.brandPrimary)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-    }
-
-    private func isCurrent(_ idx: Int) -> Bool {
-        guard idx < player.lyric.count else { return false }
-        let line = player.lyric[idx]
-        if let next = player.lyric.indices.contains(idx + 1) ? player.lyric[idx + 1] : nil {
-            return player.currentTime >= line.time && player.currentTime < next.time
-        }
-        return player.currentTime >= line.time
     }
 }
 
