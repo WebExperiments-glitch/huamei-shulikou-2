@@ -176,7 +176,7 @@ final class ReactorScene {
             let dx = Float(blocks[i].position.x) - node.position.x
             let dz = Float(blocks[i].position.z) - node.position.z
             let dist = (dx * dx + dz * dz).squareRoot()
-            let radius = 0.5 + p * 7.0
+            let radius = Float(0.5 + p * 7.0)
             let gap = 1.0 - Float((dist - radius).magnitude) / 1.4
             let effect = max(Float(0), gap)
             h += effect * 1.6 * (1 - Float(p))
