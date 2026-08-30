@@ -157,34 +157,50 @@ enum Scene3DBuilder {
             scene.rootNode.addChildNode(node)
         }
 
-        // 中心发光球（性能模式放缓节奏）
-        let sphere = SCNSphere(radius: 0.42)
-        let sm = SCNMaterial()
-        sm.diffuse.contents = UIColor(hex: 0x3B63D9).withAlphaComponent(0.7)
-        sm.emission.contents = UIColor(hex: 0x3B63D9)
-        sm.transparency = 0.65
-        sphere.materials = [sm]
-        let sphereNode = SCNNode(geometry: sphere)
-        let pulseDuration = mode == .performance ? 2.4 : 1.2
-        let pulse = SCNAction.sequence([
-            SCNAction.scale(to: mode == .performance ? 1.05 : 1.12, duration: pulseDuration),
-            SCNAction.scale(to: 0.97, duration: pulseDuration),
-        ])
-        sphereNode.runAction(.repeatForever(pulse))
-        scene.rootNode.addChildNode(sphereNode)
+        // 中心能量核（反应堆核心：内芯白炽 + 外晕半透明）
+        let core = SCNSphere(radius: 0.3)
+        let coreMat = SCNMaterial()
+        coreMat.diffuse.contents = UIColor(hex: 0xFFFFFF)
+        coreMat.emission.contents = UIColor(hex: 0x8FA6F5)
+        coreMat.metalness.contents = 1.0
+        coreMat.roughness.contents = 0.1
+        core.materials = [coreMat]
+        let coreNode = SCNNode(geometry: core)
 
-        // 星尘粒子场（出生率随模式：画质 100 / 普通 40 / 性能 10）
+        let halo = SCNSphere(radius: 0.52)
+        let haloMat = SCNMaterial()
+        haloMat.diffuse.contents = UIColor(hex: 0x3B63D9).withAlphaComponent(0.35)
+        haloMat.emission.contents = UIColor(hex: 0x3B63D9)
+        haloMat.transparency = 0.35
+        halo.materials = [haloMat]
+        let haloNode = SCNNode(geometry: halo)
+        coreNode.addChildNode(haloNode)
+
+        let pulseDuration = mode == .performance ? 2.4 : 1.2
+        // 核心呼吸：脉冲脉动，模拟反应堆能量起伏
+        let pulse = SCNAction.sequence([
+            SCNAction.scale(to: mode == .performance ? 1.05 : 1.14, duration: pulseDuration),
+            SCNAction.scale(to: 0.96, duration: pulseDuration),
+        ])
+        coreNode.runAction(.repeatForever(pulse))
+        scene.rootNode.addChildNode(coreNode)
+
+        // 反应堆辐射粒子场：从核心向四周放射（性能随模式：画质 120 / 普通 50 / 性能 12）
         let particles = SCNParticleSystem()
-        particles.particleImage = UIImage(systemName: "music.note")
-        particles.particleColor = UIColor(hex: 0x7B96F0)
-        particles.birthRate = mode.particleBirthRate
-        particles.particleLifeSpan = 4.0
+        particles.particleImage = nil
+        particles.particleColor = UIColor(hex: 0x9DB3F5)
+        particles.birthRate = mode == .performance ? 12 : (mode == .balanced ? 50 : 120)
+        particles.particleLifeSpan = mode == .performance ? 3.0 : 2.0
         particles.particleSize = mode.particleSize
-        particles.emitterShape = SCNBox(width: 2.2, height: 0.1, length: 2.2, chamferRadius: 0)
-        particles.particleVelocity = 0.18
-        particles.particleColorVariation = SCNVector4(0.4, 0.4, 0.4, 0.3)
+        // 粒子从球形核心表面向所有方向弹出 = 反应堆辐射感
+        particles.emitterShape = SCNSphere(radius: 0.42)
+        particles.particleVelocity = mode == .performance ? 0.55 : 0.85
+        particles.particleVelocityVariation = 0.4
+        particles.particleColorVariation = SCNVector4(0.4, 0.4, 0.6, 0.4)
+        particles.isAffectedByGravity = false
+        particles.particleBounce = 0
         let emitter = SCNNode()
-        emitter.position = SCNVector3(0, -1.4, 0)
+        emitter.position = SCNVector3(0, 0, 0)
         emitter.addParticleSystem(particles)
         scene.rootNode.addChildNode(emitter)
 
