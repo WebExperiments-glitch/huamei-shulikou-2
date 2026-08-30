@@ -16,7 +16,7 @@ struct HuameiApp: App {
             RootTabView()
                 .environment(settings)
                 .tint(.brandPrimary)
-                .preferredColorScheme(settings.colorScheme == .dark ? .dark : .light)
+                .preferredColorScheme(settings.colorScheme == .dark ? ColorScheme.dark : .light)
                 .onAppear {
                     Appearance.applyGlobal()
                 }

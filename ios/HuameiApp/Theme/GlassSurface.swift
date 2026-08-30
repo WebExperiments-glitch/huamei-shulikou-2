@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - 液态玻璃（Liquid Glass）封装组件
 // iOS 26 原生玻璃材质：系统实时折射背景 + 随设备倾角高光 + 触控响应。

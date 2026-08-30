@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - 品牌色（与 Web 端 antdTheme 对齐：浅色 #3B63D9 / 深色 #7B96F0）
 
