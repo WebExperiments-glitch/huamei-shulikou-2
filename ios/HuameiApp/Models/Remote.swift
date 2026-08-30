@@ -102,7 +102,22 @@ struct SongHistoryEntry: Codable, Identifiable, Sendable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case boardType = "board_type", issue, rank, score, view, favorite, coin, like
+        case boardType = "board_type"
+        case boardAlias = "board"
+        case issue, rank, score, view, favorite, coin, like
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        boardType = try c.decodeIfPresent(String.self, forKey: .boardType)
+            ?? c.decodeIfPresent(String.self, forKey: .boardAlias)
+        issue = try c.decodeIfPresent(String.self, forKey: .issue)
+        rank = try c.decodeIfPresent(Int.self, forKey: .rank)
+        score = try c.decodeIfPresent(Double.self, forKey: .score)
+        view = try c.decodeIfPresent(Int.self, forKey: .view)
+        favorite = try c.decodeIfPresent(Int.self, forKey: .favorite)
+        coin = try c.decodeIfPresent(Int.self, forKey: .coin)
+        like = try c.decodeIfPresent(Int.self, forKey: .like)
     }
 }
 

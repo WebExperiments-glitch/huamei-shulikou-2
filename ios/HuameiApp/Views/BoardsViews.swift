@@ -7,10 +7,19 @@ struct BoardsView: View {
 
     var body: some View {
         List {
-            Section("榜单") {
+            Section("官方与自建榜单") {
                 ForEach(BoardType.allCases) { type in
-                    NavigationLink(value: type) {
-                        BoardTypeRow(type: type, latest: repo.localIssues(type).first)
+                    if type == .monthly || type == .daily {
+                        // 月榜/日榜走专用远程接口（/api/monthly|daily），不走 /api/boards/{type}
+                        NavigationLink {
+                            MonthDailyView(kind: type == .monthly ? .monthly : .daily)
+                        } label: {
+                            BoardTypeRow(type: type, latest: repo.localIssues(type).first)
+                        }
+                    } else {
+                        NavigationLink(value: type) {
+                            BoardTypeRow(type: type, latest: repo.localIssues(type).first)
+                        }
                     }
                 }
             }
