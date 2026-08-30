@@ -24,6 +24,9 @@ struct RootTabView: View {
             Tab("榜单", systemImage: "chart.line.uptrend.xyaxis") {
                 NavigationStack { BoardsView() }
             }
+            Tab("歌曲", systemImage: "music.note.list") {
+                NavigationStack { SongLibraryView() }
+            }
             Tab("收藏", systemImage: "star") {
                 NavigationStack { FavoritesView() }
             }
@@ -47,6 +50,7 @@ struct RootTabView: View {
         } detail: {
             switch selection ?? .boards {
             case .boards: NavigationStack { BoardsView() }
+            case .songs: NavigationStack { SongLibraryView() }
             case .favorites: NavigationStack { FavoritesView() }
             case .settings: NavigationStack { SettingsView() }
             }
@@ -58,13 +62,14 @@ struct RootTabView: View {
 }
 
 private enum SplitSection: String, CaseIterable, Identifiable, Hashable {
-    case boards, favorites, settings
+    case boards, songs, favorites, settings
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .boards: return "榜单"
+        case .songs: return "歌曲"
         case .favorites: return "收藏"
         case .settings: return "设置"
         }
@@ -73,6 +78,7 @@ private enum SplitSection: String, CaseIterable, Identifiable, Hashable {
     var image: String {
         switch self {
         case .boards: return "chart.line.uptrend.xyaxis"
+        case .songs: return "music.note.list"
         case .favorites: return "star"
         case .settings: return "gearshape"
         }

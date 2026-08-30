@@ -43,6 +43,29 @@ struct APIClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await perform(request, path: path)
+    }
+
+    /// 直接用完整 URL 发起 GET（用于带 query 的复杂请求）
+    func getURL<T: Decodable>(from url: URL) async throws -> T {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await perform(request, path: url.path)
+    }
+
+    /// POST JSON 并解码响应
+    func post<T: Decodable>(_ path: String, body: Data?, baseURL: URL) async throws -> T {
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = body
+        return try await perform(request, path: path)
+    }
+
+    /// 统一执行 + 错误归一
+    private func perform<T: Decodable>(_ request: URLRequest, path: String) async throws -> T {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {

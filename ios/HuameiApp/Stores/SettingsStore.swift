@@ -75,6 +75,17 @@ final class FavoritesStore {
         Haptics.selection()
     }
 
+    /// 从歌曲库条目收藏/取消
+    func toggleSong(_ song: SongItem) {
+        if let idx = items.firstIndex(where: { $0.bvid == song.bvid }) {
+            items.remove(at: idx)
+        } else {
+            items.insert(Favorite(bvid: song.bvid, title: song.displayTitle, addedAt: Date()), at: 0)
+        }
+        persist()
+        Haptics.selection()
+    }
+
     func remove(_ bvid: String) {
         items.removeAll { $0.bvid == bvid }
         persist()
