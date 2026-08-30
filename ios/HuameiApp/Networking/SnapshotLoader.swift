@@ -17,7 +17,10 @@ enum SnapshotLoader {
             let decoder = JSONDecoder()
             return try decoder.decode(SnapshotData.self, from: data)
         } catch {
-            assertionFailure("快照解析失败: \(error)")
+            // 快照异常不崩 App：静默降级为空快照，后续由远程补齐/展示空态
+            #if DEBUG
+            print("⚠️ [Snapshot] 快照解析失败（已降级为离线空态）: \(error)")
+            #endif
             return nil
         }
     }

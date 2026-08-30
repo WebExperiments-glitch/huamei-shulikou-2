@@ -58,11 +58,11 @@ struct BoardIssue: Codable, Identifiable, Sendable, Hashable {
 
 // MARK: - 榜单条目
 
-/// 榜单行，字段与后端 rankings 返回对齐（可缺省，防御式解码）
+/// 榜单行，字段与后端 rankings 返回对齐（缺字段容错解码：后端精简快照可缺少互动指标）
 struct RankEntry: Codable, Identifiable, Sendable, Hashable {
     let rank: Int
     let bvid: String
-    let title: String
+    var title: String
     var titleCn: String?
     var view: Int
     var favorite: Int
@@ -76,7 +76,10 @@ struct RankEntry: Codable, Identifiable, Sendable, Hashable {
 
     var id: String { bvid }
 
-    var displayTitle: String { titleCn ?? title }
+    var displayTitle: String {
+        if let titleCn, !titleCn.isEmpty { return titleCn }
+        return title
+    }
     var displayScore: String {
         guard let score else { return "—" }
         if score > 1000 { return String(format: "%.1fk", score / 1000) }
@@ -89,6 +92,24 @@ struct RankEntry: Codable, Identifiable, Sendable, Hashable {
         case view, favorite, coin, like, share, score, pubtime
         case bestRank = "best_rank"
         case producers
+    }
+
+    /// 容错解码：互动指标缺失时按 0 处理，任何单行缺字段都不应导致整份快照解码失败
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rank = try c.decode(Int.self, forKey: .rank)
+        bvid = try c.decodeIfPresent(String.self, forKey: .bvid) ?? ""
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        titleCn = try c.decodeIfPresent(String.self, forKey: .titleCn)
+        view = try c.decodeIfPresent(Int.self, forKey: .view) ?? 0
+        favorite = try c.decodeIfPresent(Int.self, forKey: .favorite) ?? 0
+        coin = try c.decodeIfPresent(Int.self, forKey: .coin) ?? 0
+        like = try c.decodeIfPresent(Int.self, forKey: .like) ?? 0
+        share = try c.decodeIfPresent(Int.self, forKey: .share) ?? 0
+        score = try c.decodeIfPresent(Double.self, forKey: .score)
+        pubtime = try c.decodeIfPresent(Int.self, forKey: .pubtime)
+        bestRank = try c.decodeIfPresent(Int.self, forKey: .bestRank)
+        producers = try c.decodeIfPresent([String].self, forKey: .producers)
     }
 }
 
