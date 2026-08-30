@@ -5,7 +5,6 @@ import Observation
 // MARK: - 音乐可视化共享反馈（伪频谱：播放时驱动地形/方块/波纹）
 // 网页端用真实 FFT 频段；iOS 端用播放节律合成 energy/kick，驱动同款反应堆地形。
 
-@MainActor
 @Observable
 final class AudioVisualFeedback {
     static let shared = AudioVisualFeedback()
@@ -174,14 +173,13 @@ final class ReactorScene {
         var h: Float = 0
         for (k, node) in ripples.enumerated() {
             let p = ripplePhase[k] / rippleMax[k]
-            let cx = node.position.x
-            let cz = node.position.z
-            let dx = Float(blocks[i].position.x) - cx
-            let dz = Float(blocks[i].position.z) - cz
+            let dx = Float(blocks[i].position.x) - node.position.x
+            let dz = Float(blocks[i].position.z) - node.position.z
             let dist = (dx * dx + dz * dz).squareRoot()
             let radius = 0.5 + p * 7.0
-            let effect = max(0, 1 - abs(dist - radius) / 1.4)
-            h += Float(effect) * 1.6 * (1 - Float(p))
+            let gap = 1 - Float((dist - radius).magnitude) / 1.4
+            let effect = max(Float(0), gap)
+            h += effect * 1.6 * (1 - Float(p))
         }
         return h
     }
@@ -208,7 +206,7 @@ final class ReactorScene {
                 let r = (px * px + pz * pz).squareRoot()
                 guard r <= radius else { continue }
 
-                let box = SCNBox(width: spacing * 0.82, height: 1, length: spacing * 0.82, chamferRadius: 0.06)
+                let box = SCNBox(width: CGFloat(spacing * 0.82), height: 1, length: CGFloat(spacing * 0.82), chamferRadius: 0.06)
                 box.materials = [material]
                 let node = SCNNode(geometry: box)
                 node.position = SCNVector3(px, 0.5, pz)
@@ -350,24 +348,27 @@ struct Scene3DView: UIViewRepresentable {
 
         func spawnTimer(_ scn: SCNView) {
             let interval: TimeInterval = mode == .performance ? 1.0 / 30 : 1.0 / 40
-            let start = Date()
             timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let reactor = self.reactor else { return }
-                    let elapsed = Date().timeIntervalSince(start)
                     reactor.update(delta: interval)
-                    // 播放时定期产生地形波纹（对应网页端自动涟漪）
-                    if AudioVisualFeedback.shared.playing,
-                       Int(elapsed * 1.1) != Int((elapsed - interval) * 1.1) {
-                        let angle = Double.random(in: 0..<(2 * .pi))
-                        let r = Float.random(in: 4..<10)
-                        reactor.spawnRipple(x: Float(cos(angle)) * r, z: Float(sin(angle)) * r,
-                                            strength: Double.random(in: 0.7...1.4))
+                    // 播放时每秒产生一两次地形波纹（对应网页端自动涟漪）
+                    if AudioVisualFeedback.shared.playing {
+                        self.rippleCooldown -= interval
+                        if self.rippleCooldown <= 0 {
+                            self.rippleCooldown = Double.random(in: 0.7...1.6)
+                            let angle = Double.random(in: 0..<(2 * .pi))
+                            let r = Float.random(in: 4..<10)
+                            reactor.spawnRipple(x: Float(cos(angle)) * r, z: Float(sin(angle)) * r,
+                                                strength: Double.random(in: 0.7...1.4))
+                        }
                     }
                 }
             }
             timer?.tolerance = interval * 0.2
         }
+
+        private var rippleCooldown: Double = 0.2
 
         deinit {
             timer?.invalidate()
