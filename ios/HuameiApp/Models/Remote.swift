@@ -81,7 +81,7 @@ struct SongItem: Codable, Identifiable, Sendable, Hashable {
 
 // MARK: - 歌曲历史（all-history 条目）
 
-struct SongHistoryEntry: Codable, Identifiable, Sendable, Hashable {
+struct SongHistoryEntry: Decodable, Identifiable, Sendable, Hashable {
     let boardType: String?
     let issue: String?
     let rank: Int?
@@ -289,7 +289,7 @@ struct InsightKPIs: Codable, Sendable {
 
 // MARK: - 网易云
 
-struct NeteaseSong: Codable, Identifiable, Sendable, Hashable {
+struct NeteaseSong: Decodable, Identifiable, Sendable, Hashable {
     let id: Int?
     let name: String?
     let artists: String?
