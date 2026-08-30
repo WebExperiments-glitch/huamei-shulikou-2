@@ -18,7 +18,7 @@ struct RootTabView: View {
         .environment(repository)
     }
 
-    /// iPhone：底部标签栏（系统自动液态玻璃；第 5 个及之后自动进「更多」由系统收纳）
+    /// iPhone：底部标签栏（系统自动液态玻璃；第 6 个及之后自动进「更多」由系统收纳）
     private func iPhoneRoot() -> some View {
         TabView {
             Tab("榜单", systemImage: "chart.line.uptrend.xyaxis") {
@@ -32,6 +32,9 @@ struct RootTabView: View {
             }
             Tab("AI", systemImage: "sparkles") {
                 NavigationStack { AgentView() }
+            }
+            Tab("设置", systemImage: "gearshape") {
+                NavigationStack { SettingsView() }
             }
             Tab("探索", systemImage: "square.grid.2x2") {
                 NavigationStack { AnalyticsHubView() }
@@ -64,6 +67,9 @@ struct RootTabView: View {
                     sidebarLink(.producers, "P主榜", "person.crop.square")
                     sidebarLink(.vocalists, "歌姬榜", "music.mic")
                 }
+                Section("系统") {
+                    sidebarLink(.settings, "设置", "gearshape")
+                }
             }
             .navigationTitle("术力口")
             .navigationSplitViewColumnWidth(min: 210, ideal: 240)
@@ -89,6 +95,7 @@ struct RootTabView: View {
         case .compare: NavigationStack { CompareView() }
         case .producers: NavigationStack { PeopleView(role: .producers) }
         case .vocalists: NavigationStack { PeopleView(role: .vocalists) }
+        case .settings: NavigationStack { SettingsView() }
         }
     }
 
@@ -100,6 +107,6 @@ struct RootTabView: View {
 }
 
 private enum SplitSection: String, CaseIterable, Identifiable, Hashable {
-    case boards, monthly, daily, songs, hot, ai, netease, scene, insights, predict, compare, producers, vocalists
+    case boards, monthly, daily, songs, hot, ai, netease, scene, insights, predict, compare, producers, vocalists, settings
     var id: String { rawValue }
 }
