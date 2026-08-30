@@ -18,7 +18,6 @@
 ```
 ios/
 ├── project.yml                # XcodeGen 工程定义（CI 用 xcodegen generate 生成）
-├── builder.json               # ios-builder 配置（WebExperiments-glitch/huamei-shulikou-2）
 ├── tools/export_snapshot.py   # 后端 → 离线快照生成脚本
 └── HuameiApp/
     ├── App.swift              # 入口：注入 Settings/收藏/数据仓库
@@ -32,22 +31,19 @@ ios/
 
 ## 在 Windows 上构建 IPA（零 Mac）
 
-前提：本仓库已 push 到 GitHub（`WebExperiments-glitch/huamei-shulikou-2`）。
+前提：本仓库已 push 到 GitHub（`WebExperiments-glitch/huamei-shulikou-2`），且根目录已配置
+`builder.json`（`ios.path = "ios"`）与 `.github/workflows/ios-build.yml`（ios-builder 生成的云构建工作流）。
 
 ```bash
-# 1. 鉴权 GitHub
+# 1. 鉴权 GitHub（首次）
 builder auth github
 
-# 2. 生成工程并注入 CI 工作流（builder 会加 .github/workflows/ios-build.yml，XcodeGen 生成 .xcodeproj 在 CI 内完成）
-builder init
-
-# 3. 触发云构建并下载 IPA 到 ./dist/
+# 2. 触发云构建并下载 IPA 到 ./dist/（在仓库根目录运行）
 builder ios build
 ```
 
-> 说明：工程用 XcodeGen 管理 `.xcodeproj`（不提交二进制工程文件）。若 CI 的 workflow 未先执行
-> `xcodegen generate`，可在 `ios-build.yml` 的 build 步骤前加 `brew install xcodegen && cd ios && xcodegen generate`，
-> 或把生成的 `.xcodeproj` 一并提交（本项目为可移植性默认不提交）。
+> 工程用 XcodeGen 管理 `.xcodeproj`（不提交二进制工程文件）；`.github/workflows/ios-build.yml`
+> 已内置「检测 project.yml → brew install xcodegen → xcodegen generate」步骤，无需手工生成。
 
 ## 签名 / 安装（IPA）
 
